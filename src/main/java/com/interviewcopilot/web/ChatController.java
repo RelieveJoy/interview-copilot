@@ -51,6 +51,31 @@ public class ChatController {
     private final String modelName;
     private final boolean apiKeyConfigured;
 
+    /** 问候/寒暄词表 → 旁路 RAG：这类输入无检索意义，硬走向量库会捞回不相干笔记强答 */
+    private static final java.util.regex.Pattern SMALL_TALK = java.util.regex.Pattern.compile(
+            "(?i)(你好|您好|你们好|你好呀|你好啊|嗨|哈喽|hello|hi|hey|在吗|在么|谢谢|多谢|感谢|辛苦了|"
+                    + "再见|拜拜|晚安|早安|测试|test)");
+
+    /** 按标点/空白切成小段，每段都在寒暄词表内且 ≤6 字才算闲聊（"你好呀，在吗"✅ "你好，HashMap是什么"❌） */
+    private static boolean isSmallTalk(String q) {
+        String cleaned = q.replaceAll("[\\s!！。\\.?？~～…，,、；;：:]+", " ").trim();
+        if (cleaned.isEmpty()) {
+            return false;
+        }
+        for (String seg : cleaned.split("\\s+")) {
+            if (seg.length() > 6 || !SMALL_TALK.matcher(seg).matches()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String smallTalkPrompt(String greeting) {
+        return "用户向「面试拷打助手」发送了这句话（非技术问题）：「" + greeting + "」。"
+                + "请以助手身份用一两句话友好回应，并用一句话说明你能基于用户导入的 Java 八股笔记"
+                + "做检索问答和模拟面试拷打。不要罗列知识点、不要长篇大论、不要输出列表。";
+    }
+
     public ChatController(OpenAiChatModel chatModel,
                           StreamingChatModel streamingChatModel,
                           KnowledgeAssistant knowledgeAssistant,
@@ -119,6 +144,16 @@ public class ChatController {
                 ? "default" : request.sessionId().trim();
 
         long start = System.currentTimeMillis();
+        // 纯问候：不检索不注入，简短回应（knowledgeHit=false，前端不显示引用区）
+        if (isSmallTalk(question)) {
+            try {
+                String answer = chatModel.chat(smallTalkPrompt(question));
+                return ResponseEntity.ok(new ChatResponse(
+                        answer, modelName, System.currentTimeMillis() - start, false, List.of()));
+            } catch (Exception e) {
+                return llmError(e);
+            }
+        }
         try {
             // 检索命中的真实来源（服务端事实，非模型自述）
             List<KnowledgeService.KnowledgeHit> hits = knowledgeService.search(question);
@@ -164,6 +199,12 @@ public class ChatController {
                 ? "default" : request.sessionId().trim();
         long start = System.currentTimeMillis();
 
+        // 纯问候：旁路 RAG（无 sources 事件），done 带 smallTalk 标记，前端跳过引用区
+        if (isSmallTalk(question)) {
+            streamDirect(emitter, smallTalkPrompt(question), start, true);
+            return emitter;
+        }
+
         knowledgeAssistant.chatStream(sessionId, question)
                 .onRetrieved(contents -> sseSend(emitter, "sources", toSourceRefs(contents)))
                 .onPartialResponse(token -> sseSend(emitter, "token", token))
@@ -195,9 +236,15 @@ public class ChatController {
             return emitter;
         }
         long start = System.currentTimeMillis();
+        streamDirect(emitter, request.question().trim(), start, false);
+        return emitter;
+    }
+
+    /** 直连流式（无 RAG）。事件序列：token* → done | error */
+    private void streamDirect(SseEmitter emitter, String message, long start, boolean smallTalk) {
         streamingChatModel.chat(
                 dev.langchain4j.model.chat.request.ChatRequest.builder()
-                        .messages(UserMessage.from(request.question().trim())).build(),
+                        .messages(UserMessage.from(message)).build(),
                 new StreamingChatResponseHandler() {
                     @Override
                     public void onPartialResponse(String token) {
@@ -206,7 +253,9 @@ public class ChatController {
 
                     @Override
                     public void onCompleteResponse(dev.langchain4j.model.chat.response.ChatResponse response) {
-                        sseSend(emitter, "done", Map.of("latencyMs", System.currentTimeMillis() - start));
+                        sseSend(emitter, "done", smallTalk
+                                ? Map.of("latencyMs", System.currentTimeMillis() - start, "smallTalk", true)
+                                : Map.of("latencyMs", System.currentTimeMillis() - start));
                         emitter.complete();
                     }
 
@@ -217,7 +266,6 @@ public class ChatController {
                         emitter.complete();
                     }
                 });
-        return emitter;
     }
 
     private List<SourceRef> toSourceRefs(List<Content> contents) {

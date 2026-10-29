@@ -32,7 +32,8 @@ public class AssistantConfig {
                         .promptTemplate(PromptTemplate.from("""
                                 {{userMessage}}
 
-                                请结合以下<参考资料>回答（引用时注明来源文件名）：
+                                请结合以下<参考资料>回答（引用时注明来源文件名）。
+                                若用户消息只是问候/寒暄/闲聊而非技术问题，请忽略<参考资料>，直接简短友好地回应：
                                 {{contents}}"""))
                         .metadataKeysToInclude(List.of("source"))
                         .build())

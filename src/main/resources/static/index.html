@@ -597,7 +597,7 @@ async function runStream(mode, q, addUser) {
   body.className = 'body';
   content.appendChild(body);
 
-  let text = '', sources = null, latency = null, gotError = null, firstToken = true;
+  let text = '', sources = null, latency = null, gotError = null, firstToken = true, smallTalk = false;
   aborter = new AbortController();
 
   const renderText = () => {
@@ -616,7 +616,7 @@ async function runStream(mode, q, addUser) {
         if (firstToken) { firstToken = false; status.remove(); }
         text += t; scheduleRender();
       },
-      done(d) { latency = d.latencyMs; },
+      done(d) { latency = d.latencyMs; if (d && d.smallTalk) smallTalk = true; },
       error(e) { gotError = e.error || '服务异常'; }
     }, aborter.signal);
   } catch (err) {
@@ -640,13 +640,13 @@ async function runStream(mode, q, addUser) {
     const n = document.createElement('div');
     n.className = 'src-none'; n.textContent = '直连模式 · 未检索知识库';
     content.appendChild(n);
-  } else if (sources == null) {
+  } else if (sources == null && !smallTalk) {
     renderSources(content, []);
-  }
+  } // 闲聊（smallTalk）：无检索，不显示引用区
   msgfoot(content, text, latency);
   scrollBottom();
 
-  msgs.push({ role: 'bot', text, sources: sources || [], latencyMs: latency, mode }); persist();
+  msgs.push({ role: 'bot', text, sources: sources || [], latencyMs: latency, mode, st: smallTalk || undefined }); persist();
   busy = false; setComposer(); ta.focus();
 }
 
@@ -867,6 +867,7 @@ function renderAll() {
       const c = s.querySelector('.content');
       c.insertAdjacentHTML('beforeend', `<div class="body">${md(m.text)}</div>`);
       if (m.mode === 'ask') c.insertAdjacentHTML('beforeend', '<div class="src-none">直连模式 · 未检索知识库</div>');
+      else if (m.st) { /* 闲聊：无检索无引用 */ }
       else renderSources(c, m.sources);
       msgfoot(c, m.text, m.latencyMs);
     } else if (m.role === 'error') {
