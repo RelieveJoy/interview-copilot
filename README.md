@@ -90,8 +90,6 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 | POST | `/api/interview/start` | `{"topic","count"}` → 生成题目列表 |
 | POST | `/api/interview/answer` | `{"sessionId","question","answer"}` → 评分 JSON |
 
-> 完整接口测试用例（请求 / 预期 / 实测结果）见 **[docs/接口测试用例.md](docs/接口测试用例.md)**。
-
 ## ⚙️ 配置项（application.yml）
 
 | 键 | 默认 | 说明 |
