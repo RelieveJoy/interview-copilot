@@ -80,6 +80,8 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 | GET | `/api/health` | 存活检查（模型、key 状态、知识库文件数） |
 | GET/POST | `/api/ask?q=` 或 `{"question"}` | 直连 LLM 问答（无 RAG，兼作对照组） |
 | POST | `/api/chat` | `{"sessionId","question"}` → RAG 回答 + 引用来源列表 |
+| POST | `/api/chat/stream` | 同上，SSE 流式：`sources`（检索命中，生成前即达）→ `token`\* → `done` |
+| POST | `/api/ask/stream` | 直连流式（无 RAG）：`token`\* → `done` |
 | POST | `/api/knowledge/import` | `{"path":"目录或.md文件"}` → 批量导入 |
 | POST | `/api/knowledge/upload` | multipart `files` → 上传导入 |
 | GET | `/api/knowledge/status` | 已导入文件数 |
@@ -143,6 +145,14 @@ src/main/resources/
 | 首页 | RAG 引用溯源 | 面试评分 |
 |---|---|---|
 | ![首页](docs/screenshot-home.png) | ![RAG](docs/screenshot-rag.png) | ![面试](docs/screenshot-interview.png) |
+
+单文件 `static/index.html`（零构建、零 CDN 依赖），参考 2025 年主流 AI 助手（Perplexity / ChatGPT 等）的交互惯例实现：
+
+- **SSE 流式打字机**：`sources` 事件先于生成到达——先看检索到了哪些笔记，再看回答逐字输出（两阶段状态提示），支持随时「停止生成」
+- **文档式消息布局**：回答通栏渲染（非气泡），手写 Markdown 渲染器——代码块带语言标签和一键复制、GFM 表格、加粗/引用/列表，流式半成品代码块也能正确渲染
+- **引用溯源卡片**：按来源文件分组、每段命中带相似度条与片段预览，引用是服务端检索事实而非模型自述
+- **面试模式**：侧栏进度点实时显示第几题，评分卡带环形分数（按分数着色）、亮点/欠缺清单、参考答案折叠、追问区块
+- **工程细节**：空状态建议问题一键发送、Enter/Shift+Enter、输入框自增高、失败重试卡、对话记录 localStorage 持久化（刷新不丢）
 
 ## 🧪 实测评测（2026-10-29 · glm-4-flash · 51 篇真实笔记）
 

@@ -7,7 +7,13 @@ import com.interviewcopilot.web.dto.AskResponse;
 import com.interviewcopilot.web.dto.ChatRequest;
 import com.interviewcopilot.web.dto.ChatResponse;
 import com.interviewcopilot.web.dto.SourceRef;
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.ContentMetadata;
+import dev.langchain4j.service.TokenStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -38,17 +45,20 @@ public class ChatController {
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
     private final OpenAiChatModel chatModel;
+    private final StreamingChatModel streamingChatModel;
     private final KnowledgeAssistant knowledgeAssistant;
     private final KnowledgeService knowledgeService;
     private final String modelName;
     private final boolean apiKeyConfigured;
 
     public ChatController(OpenAiChatModel chatModel,
+                          StreamingChatModel streamingChatModel,
                           KnowledgeAssistant knowledgeAssistant,
                           KnowledgeService knowledgeService,
                           @Value("${llm.model-name}") String modelName,
                           @Value("${llm.api-key:}") String apiKey) {
         this.chatModel = chatModel;
+        this.streamingChatModel = streamingChatModel;
         this.knowledgeAssistant = knowledgeAssistant;
         this.knowledgeService = knowledgeService;
         this.modelName = modelName;
@@ -128,6 +138,109 @@ public class ChatController {
                     answer, modelName, System.currentTimeMillis() - start, !hits.isEmpty(), sources));
         } catch (Exception e) {
             return llmError(e);
+        }
+    }
+
+    // ---------- 流式版本（SSE 打字机效果） ----------
+
+    /**
+     * RAG 流式问答。事件序列：sources（检索命中，生成前即达）→ token*（增量文本）→ done | error。
+     */
+    @PostMapping("/chat/stream")
+    public SseEmitter chatStream(@RequestBody ChatRequest request) {
+        SseEmitter emitter = new SseEmitter(180_000L);
+        if (!apiKeyConfigured) {
+            sseSend(emitter, "error", Map.of("error", "未配置 ZHIPUAI_API_KEY 环境变量，无法调用在线大模型"));
+            emitter.complete();
+            return emitter;
+        }
+        if (request == null || request.question() == null || request.question().isBlank()) {
+            sseSend(emitter, "error", Map.of("error", "question 不能为空"));
+            emitter.complete();
+            return emitter;
+        }
+        String question = request.question().trim();
+        String sessionId = (request.sessionId() == null || request.sessionId().isBlank())
+                ? "default" : request.sessionId().trim();
+        long start = System.currentTimeMillis();
+
+        knowledgeAssistant.chatStream(sessionId, question)
+                .onRetrieved(contents -> sseSend(emitter, "sources", toSourceRefs(contents)))
+                .onPartialResponse(token -> sseSend(emitter, "token", token))
+                .onCompleteResponse(response -> {
+                    sseSend(emitter, "done", Map.of("latencyMs", System.currentTimeMillis() - start));
+                    emitter.complete();
+                })
+                .onError(t -> {
+                    log.error("流式调用大模型失败", t);
+                    sseSend(emitter, "error", Map.of("error", "调用大模型失败：" + t.getMessage()));
+                    emitter.complete();
+                })
+                .start();
+        return emitter;
+    }
+
+    /** 直连流式（无 RAG）。事件序列：token* → done | error */
+    @PostMapping("/ask/stream")
+    public SseEmitter askStream(@RequestBody AskRequest request) {
+        SseEmitter emitter = new SseEmitter(180_000L);
+        if (!apiKeyConfigured) {
+            sseSend(emitter, "error", Map.of("error", "未配置 ZHIPUAI_API_KEY 环境变量，无法调用在线大模型"));
+            emitter.complete();
+            return emitter;
+        }
+        if (request == null || request.question() == null || request.question().isBlank()) {
+            sseSend(emitter, "error", Map.of("error", "question 不能为空"));
+            emitter.complete();
+            return emitter;
+        }
+        long start = System.currentTimeMillis();
+        streamingChatModel.chat(
+                dev.langchain4j.model.chat.request.ChatRequest.builder()
+                        .messages(UserMessage.from(request.question().trim())).build(),
+                new StreamingChatResponseHandler() {
+                    @Override
+                    public void onPartialResponse(String token) {
+                        sseSend(emitter, "token", token);
+                    }
+
+                    @Override
+                    public void onCompleteResponse(dev.langchain4j.model.chat.response.ChatResponse response) {
+                        sseSend(emitter, "done", Map.of("latencyMs", System.currentTimeMillis() - start));
+                        emitter.complete();
+                    }
+
+                    @Override
+                    public void onError(Throwable error) {
+                        log.error("流式直连调用失败", error);
+                        sseSend(emitter, "error", Map.of("error", "调用大模型失败：" + error.getMessage()));
+                        emitter.complete();
+                    }
+                });
+        return emitter;
+    }
+
+    private List<SourceRef> toSourceRefs(List<Content> contents) {
+        List<SourceRef> sources = new ArrayList<>();
+        for (Content c : contents) {
+            String file = c.textSegment().metadata().getString("source");
+            Object score = c.metadata().get(ContentMetadata.SCORE);
+            String snippet = c.textSegment().text().replaceAll("\\s+", " ");
+            if (snippet.length() > 80) {
+                snippet = snippet.substring(0, 80) + "…";
+            }
+            sources.add(new SourceRef(file == null ? "未知来源" : file,
+                    score instanceof Double d ? d : 0.0, snippet));
+        }
+        return sources;
+    }
+
+    /** SSE 发送兜底：连接已断/已完成时静默忽略 */
+    private void sseSend(SseEmitter emitter, String event, Object data) {
+        try {
+            emitter.send(SseEmitter.event().name(event).data(data));
+        } catch (Exception ignored) {
+            // 客户端断开（点了停止按钮/关页），无需处理
         }
     }
 

@@ -2,6 +2,7 @@ package com.interviewcopilot.service;
 
 import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.service.UserMessage;
 
 /**
@@ -21,4 +22,8 @@ public interface KnowledgeAssistant {
 
     @SystemMessage(SYSTEM_PROMPT)
     String chat(@MemoryId String sessionId, @UserMessage String question);
+
+    /** 流式版本：TokenStream 支持逐 token 回调，onRetrieved 还能在生成前拿到检索命中 */
+    @SystemMessage(SYSTEM_PROMPT)
+    TokenStream chatStream(@MemoryId String sessionId, @UserMessage String question);
 }

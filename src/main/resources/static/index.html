@@ -6,223 +6,670 @@
 <title>InterviewCopilot · 面试拷打助手</title>
 <style>
   :root {
-    --bg: #0f1117; --panel: #171a23; --card: #1e2230; --border: #2a2f42;
-    --text: #e6e9f2; --muted: #8b93a8; --accent: #4f7cff; --accent2: #3ecf8e;
+    --bg: #0e1016; --panel: #151823; --card: #1c2130; --border: #29304a; --border-soft: #222840;
+    --text: #e6e9f2; --muted: #8b93a8; --faint: #5c6478;
+    --accent: #4f7cff; --accent-soft: rgba(79,124,255,.14);
+    --green: #3ecf8e; --green-soft: rgba(62,207,142,.12);
+    --amber: #f0b429; --amber-soft: rgba(240,180,41,.12);
+    --red: #e06060; --red-soft: rgba(224,96,96,.12);
+    --mono: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14.5px; line-height: 1.7;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
 
-  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  header h1 { font-size: 18px; font-weight: 600; }
-  header .badge { font-size: 12px; color: var(--muted); background: var(--card); border: 1px solid var(--border); padding: 3px 10px; border-radius: 12px; }
+  /* ---------- 顶栏 ---------- */
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+  .badge {
+    font-size: 12px; color: var(--muted); background: var(--card);
+    border: 1px solid var(--border); padding: 2px 10px; border-radius: 999px; white-space: nowrap;
+  }
+  .badge.ok { color: var(--green); border-color: rgba(62,207,142,.35); background: var(--green-soft); }
   header .spacer { flex: 1; }
-  header button { background: var(--card); color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
-  header button:hover { color: var(--text); }
+  .iconbtn {
+    background: var(--card); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 12px; font-size: 13px;
+  }
+  .iconbtn:hover { color: var(--text); border-color: var(--faint); }
+  #menuBtn { display: none; }
 
-  main { flex: 1; display: flex; overflow: hidden; }
+  /* ---------- 主体两栏 ---------- */
+  .app { flex: 1; display: flex; overflow: hidden; position: relative; }
+  aside {
+    width: 288px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--border);
+    padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border-soft); border-radius: 12px; padding: 14px;
+  }
+  .card h2 { font-size: 13px; color: var(--muted); font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .card input[type=text] {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 8px 10px; font-size: 13px; margin-bottom: 8px;
+  }
+  .card input::placeholder { color: var(--faint); }
+  .btn {
+    width: 100%; background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 8px; font-size: 13px; margin-top: 4px;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn.ghost:hover { color: var(--text); border-color: var(--faint); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+  .hint { font-size: 12px; color: var(--faint); line-height: 1.65; margin-top: 8px; }
+  .stat { font-size: 12.5px; color: var(--green); margin-top: 8px; min-height: 1em; word-break: break-all; }
+  #topicSel {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px; font-size: 13px; margin-bottom: 8px;
+  }
+  .iv-progress { display: none; margin-top: 10px; }
+  .iv-progress .lbl { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .iv-dots { display: flex; gap: 6px; flex-wrap: wrap; }
+  .iv-dots i {
+    width: 10px; height: 10px; border-radius: 50%; background: var(--border); display: block;
+  }
+  .iv-dots i.done { background: var(--green); }
+  .iv-dots i.cur { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
-  aside { width: 280px; background: var(--panel); border-right: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
-  aside h2 { font-size: 14px; color: var(--muted); font-weight: 600; }
-  aside input[type=text] { width: 100%; background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
-  aside button { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 8px; font-size: 13px; cursor: pointer; }
-  aside button:hover { filter: brightness(1.15); }
-  aside button.ghost { background: var(--card); color: var(--text); border: 1px solid var(--border); }
-  aside .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
-  aside .stat { font-size: 13px; color: var(--accent2); }
+  /* ---------- 消息区（文档式布局） ---------- */
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #scroller { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+  .thread { max-width: 52rem; margin: 0 auto; padding: 26px 22px 30px; display: flex; flex-direction: column; gap: 22px; }
 
-  #chat { flex: 1; display: flex; flex-direction: column; }
-  #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  /* 用户消息：右侧短气泡 */
+  .msg-user { display: flex; justify-content: flex-end; }
+  .msg-user .bubble {
+    max-width: 78%; background: var(--accent); color: #fff;
+    padding: 9px 14px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; word-break: break-word;
+  }
 
-  .msg { max-width: 78%; padding: 10px 14px; border-radius: 12px; line-height: 1.7; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
-  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-  .msg.bot { align-self: flex-start; background: var(--card); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-  .msg.bot b { color: #fff; }
-  .msg.error { align-self: center; background: transparent; border: 1px solid #a33; color: #e88; font-size: 13px; }
-  .msg .sources { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
-  .msg .sources span { font-size: 11px; color: var(--accent2); background: rgba(62,207,142,.1); border: 1px solid rgba(62,207,142,.35); padding: 2px 8px; border-radius: 10px; cursor: default; }
+  /* 助手消息：全宽文档流 */
+  .msg-bot { display: flex; gap: 12px; }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+    background: linear-gradient(135deg, #3a5bd9, #7b4fd4); display: flex; align-items: center;
+    justify-content: center; font-size: 15px; user-select: none;
+  }
+  .msg-bot .content { flex: 1; min-width: 0; }
+  .msg-bot .who { font-size: 12px; color: var(--faint); margin-bottom: 6px; }
+  .msg-bot .body { word-break: break-word; }
+  .msg-bot .body > *:first-child { margin-top: 0; }
+  .msg-bot .body > *:last-child { margin-bottom: 0; }
+  .msg-bot .body p { margin: 10px 0; }
+  .msg-bot .body h3, .msg-bot .body h2 { margin: 18px 0 8px; font-size: 15.5px; }
+  .msg-bot .body h4 { margin: 14px 0 6px; font-size: 14.5px; color: var(--text); }
+  .msg-bot .body ul, .msg-bot .body ol { margin: 8px 0; padding-left: 22px; }
+  .msg-bot .body li { margin: 4px 0; }
+  .msg-bot .body blockquote {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 8px 14px; border-radius: 0 8px 8px 0; margin: 10px 0; color: var(--muted);
+  }
+  .msg-bot .body code {
+    font-family: var(--mono); font-size: 12.8px; background: rgba(110,118,140,.18);
+    padding: 2px 6px; border-radius: 5px;
+  }
+  .codewrap { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 12px 0; background: #10131c; }
+  .codehead {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 12px; background: #171b28; border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--muted);
+  }
+  .codehead button {
+    background: none; border: none; color: var(--muted); font-size: 12px; padding: 2px 6px; border-radius: 5px;
+  }
+  .codehead button:hover { color: var(--text); background: rgba(110,118,140,.15); }
+  .codewrap pre { padding: 12px 14px; overflow-x: auto; }
+  .codewrap pre code { font-family: var(--mono); font-size: 12.8px; background: none; padding: 0; line-height: 1.6; }
+  .tblwrap { overflow-x: auto; margin: 12px 0; border: 1px solid var(--border-soft); border-radius: 10px; }
+  .msg-bot .body table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  .msg-bot .body th, .msg-bot .body td { border-bottom: 1px solid var(--border-soft); padding: 8px 12px; text-align: left; }
+  .msg-bot .body th { background: #171b28; color: var(--muted); font-weight: 600; }
+  .msg-bot .body tr:last-child td { border-bottom: none; }
+  .msg-bot .body hr { border: none; border-top: 1px solid var(--border-soft); margin: 16px 0; }
 
-  #inputbar { display: flex; gap: 10px; padding: 14px 20px; background: var(--panel); border-top: 1px solid var(--border); }
-  #inputbar select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 0 8px; font-size: 13px; }
-  #inputbar input { flex: 1; background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
-  #inputbar button { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 10px 24px; font-size: 14px; cursor: pointer; }
-  #inputbar button:disabled { background: var(--border); cursor: not-allowed; }
-  .typing { color: var(--muted); font-size: 13px; align-self: flex-start; }
+  /* 状态行（检索中/生成中） */
+  .statusline { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .dots { display: inline-flex; gap: 4px; }
+  .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+  .dots i:nth-child(2) { animation-delay: .2s; } .dots i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+  .cursor {
+    display: inline-block; width: 7px; height: 15px; background: var(--accent);
+    vertical-align: -2px; margin-left: 2px; animation: cursorblink .9s steps(1) infinite;
+  }
+  @keyframes cursorblink { 50% { opacity: 0; } }
+
+  /* 来源卡（Perplexity 式） */
+  .sources { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .sources .src-title { font-size: 12px; color: var(--faint); }
+  .src-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .src-card {
+    flex: 1 1 200px; max-width: 260px; background: var(--card); border: 1px solid var(--border-soft);
+    border-radius: 10px; padding: 9px 11px; font-size: 12.5px; display: flex; gap: 8px; align-items: flex-start;
+  }
+  .src-card .idx {
+    background: var(--green-soft); color: var(--green); border: 1px solid rgba(62,207,142,.35);
+    min-width: 18px; height: 18px; border-radius: 5px; font-size: 11px;
+    display: inline-flex; align-items: center; justify-content: center; margin-top: 1px;
+  }
+  .src-card .fname { color: var(--text); font-weight: 600; word-break: break-all; }
+  .src-card .score-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .score-bar { flex: 1; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+  .score-bar i { display: block; height: 100%; background: var(--green); }
+  .src-card .score-val { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .src-card .snip { color: var(--faint); font-size: 11.5px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .src-none { font-size: 12.5px; color: var(--faint); background: var(--card); border: 1px dashed var(--border); border-radius: 10px; padding: 8px 12px; }
+
+  /* 消息底部操作 */
+  .msgfoot { display: flex; align-items: center; gap: 10px; margin-top: 10px; opacity: 0; transition: opacity .15s; }
+  .msg-bot:hover .msgfoot, .msgfoot.always { opacity: 1; }
+  .msgfoot button {
+    background: none; border: 1px solid transparent; color: var(--faint); font-size: 12px;
+    padding: 3px 8px; border-radius: 6px;
+  }
+  .msgfoot button:hover { color: var(--text); background: var(--card); border-color: var(--border-soft); }
+  .msgfoot .lat { font-size: 11.5px; color: var(--faint); font-family: var(--mono); }
+
+  /* 错误卡片 */
+  .msg-err {
+    align-self: center; max-width: 90%; border: 1px solid rgba(224,96,96,.4); background: var(--red-soft);
+    color: #eda6a6; border-radius: 10px; padding: 10px 14px; font-size: 13px; display: flex; gap: 12px; align-items: center;
+  }
+  .msg-err button { background: none; border: 1px solid rgba(224,96,96,.4); color: #eda6a6; border-radius: 6px; padding: 3px 10px; font-size: 12px; }
+  .msg-err button:hover { background: rgba(224,96,96,.12); }
+
+  /* 空状态 */
+  .empty { margin: auto; text-align: center; padding: 30px 20px; }
+  .empty .logo { font-size: 42px; margin-bottom: 10px; }
+  .empty h2 { font-size: 19px; margin-bottom: 6px; }
+  .empty p { color: var(--muted); font-size: 13.5px; margin-bottom: 22px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 34rem; margin: 0 auto; }
+  .chips button {
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    border-radius: 999px; padding: 8px 16px; font-size: 13px;
+  }
+  .chips button:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  /* 面试模式消息 */
+  .iv-q { display: flex; gap: 10px; align-items: baseline; }
+  .iv-q .no {
+    flex-shrink: 0; font-size: 12px; background: var(--accent-soft); color: var(--accent);
+    border: 1px solid rgba(79,124,255,.4); border-radius: 6px; padding: 2px 8px; font-family: var(--mono);
+  }
+  .eval { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--card); padding: 14px; margin-top: 4px; }
+  .eval .head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .score-ring {
+    width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 700; flex-shrink: 0; font-family: var(--mono);
+  }
+  .eval .verdict { font-size: 13.5px; color: var(--muted); }
+  .eval .verdict b { color: var(--text); font-size: 14.5px; display: block; }
+  .eval section { margin-top: 10px; font-size: 13.5px; }
+  .eval section h4 { font-size: 12.5px; margin-bottom: 4px; font-weight: 600; }
+  .eval ul { padding-left: 20px; }
+  .eval li { margin: 3px 0; }
+  .eval .good h4 { color: var(--green); } .eval .good li { color: #b8e6d2; }
+  .eval .bad h4 { color: var(--amber); } .eval .bad li { color: #e8d5a3; }
+  .eval details summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+  .eval details .body { margin-top: 6px; padding: 10px 12px; background: var(--bg); border-radius: 8px; font-size: 13px; }
+  .followup {
+    margin-top: 10px; border-left: 3px solid var(--amber); background: var(--amber-soft);
+    padding: 9px 13px; border-radius: 0 8px 8px 0; font-size: 13.5px;
+  }
+
+  /* ---------- 输入区 ---------- */
+  .composer-wrap { flex-shrink: 0; padding: 12px 22px 16px; background: linear-gradient(to top, var(--bg) 70%, transparent); }
+  .composer {
+    max-width: 52rem; margin: 0 auto; background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 10px 12px; display: flex; gap: 10px; align-items: flex-end;
+  }
+  .composer:focus-within { border-color: var(--accent); }
+  #modeSel {
+    background: var(--bg); color: var(--muted); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 6px; font-size: 12.5px; align-self: center; max-width: 92px;
+  }
+  #ta {
+    flex: 1; background: none; border: none; color: var(--text); font-family: inherit;
+    font-size: 14.5px; line-height: 1.55; resize: none; max-height: 170px; padding: 6px 2px;
+  }
+  #ta::placeholder { color: var(--faint); }
+  #ta:focus { outline: none; }
+  #sendBtn {
+    align-self: center; width: 38px; height: 38px; border-radius: 10px; border: none;
+    background: var(--accent); color: #fff; font-size: 15px; flex-shrink: 0;
+  }
+  #sendBtn.stop { background: var(--red); }
+  #sendBtn:disabled { opacity: .4; cursor: not-allowed; }
+  .composer-hint { max-width: 52rem; margin: 6px auto 0; text-align: center; font-size: 11.5px; color: var(--faint); }
+
+  /* toast */
+  #toast {
+    position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%) translateY(8px);
+    background: #262c40; color: var(--text); font-size: 13px; border-radius: 999px;
+    padding: 7px 16px; border: 1px solid var(--border); opacity: 0; pointer-events: none;
+    transition: all .2s; z-index: 60;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* 滚动条 */
+  #scroller::-webkit-scrollbar, aside::-webkit-scrollbar { width: 8px; }
+  #scroller::-webkit-scrollbar-thumb, aside::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  /* ---------- 移动端 ---------- */
+  #backdrop { display: none; position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 40; }
+  @media (max-width: 960px) {
+    #menuBtn { display: block; }
+    aside {
+      position: absolute; z-index: 50; left: 0; top: 0; bottom: 0;
+      transform: translateX(-105%); transition: transform .22s ease; box-shadow: 8px 0 30px rgba(0,0,0,.4);
+    }
+    body.nav-open aside { transform: translateX(0); }
+    body.nav-open #backdrop { display: block; }
+    .thread { padding: 18px 14px 24px; }
+    .composer-wrap { padding: 10px 12px 12px; }
+    header h1 { font-size: 14px; }
+    .badge.hide-sm { display: none; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>🎯 InterviewCopilot 面试拷打助手</h1>
+  <button id="menuBtn" class="iconbtn" onclick="document.body.classList.toggle('nav-open')" title="菜单">☰</button>
+  <h1>🎯 InterviewCopilot</h1>
   <span class="badge" id="modelBadge">…</span>
-  <span class="badge" id="kbBadge">知识库 0 篇</span>
+  <span class="badge ok hide-sm" id="kbBadge">知识库 0 篇</span>
   <span class="spacer"></span>
-  <button onclick="location.reload()">🔄 新对话</button>
+  <button class="iconbtn" onclick="newChat()" title="清空当前会话并开启新对话">🔄 新对话</button>
 </header>
 
-<main>
+<div class="app">
   <aside>
-    <h2>📚 知识库</h2>
-    <input type="text" id="kbPath" placeholder="服务端目录或 .md 路径">
-    <button onclick="importPath()">按路径导入</button>
-    <input type="file" id="fileInput" accept=".md,.txt" multiple hidden onchange="uploadFiles(this.files)">
-    <button class="ghost" onclick="document.getElementById('fileInput').click()">⬆ 上传 .md 文件</button>
-    <div class="hint">
-      导入的笔记会被切分、本地向量化（bge-small-zh）后存入内存向量库，
-      对话时自动检索最相关的段落作为参考资料。重复文件名自动跳过。
+    <div class="card">
+      <h2>📚 知识库</h2>
+      <input type="text" id="kbPath" placeholder="服务端目录或 .md 路径" onkeydown="if(event.key==='Enter')importPath()">
+      <button class="btn" onclick="importPath()">按路径导入</button>
+      <input type="file" id="fileInput" accept=".md,.txt" multiple hidden onchange="uploadFiles(this.files)">
+      <button class="btn ghost" onclick="document.getElementById('fileInput').click()">⬆ 上传 .md 文件</button>
+      <div class="hint">笔记被切分后本地向量化（bge-small-zh）存入内存向量库，对话时自动检索注入。重复文件名自动跳过。</div>
+      <div class="stat" id="kbStat"></div>
     </div>
-    <div class="stat" id="kbStat"></div>
 
-    <h2>🎤 面试模式</h2>
-    <select id="topicSel" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:13px;"></select>
-    <input type="text" id="qCount" placeholder="题数（默认 5）" inputmode="numeric">
-    <button class="ghost" onclick="startInterview()">🎤 开始拷打</button>
-    <button class="ghost" onclick="endInterview()" id="endBtn" style="display:none">⛔ 结束面试</button>
-    <div class="hint">出题 → 你口头作答（打字提交）→ 面试官基于知识库评分、指出欠缺并追问。</div>
-    <div class="stat" id="ivStat"></div>
+    <div class="card">
+      <h2>🎤 面试模式</h2>
+      <select id="topicSel"></select>
+      <input type="text" id="qCount" placeholder="题数（默认 5）" inputmode="numeric">
+      <button class="btn" onclick="startInterview()">开始拷打</button>
+      <button class="btn ghost" id="endBtn" style="display:none" onclick="endInterview(false)">⛔ 结束面试</button>
+      <div class="hint">出题 → 你作答 → 面试官基于你的笔记评分、指出欠缺并追问。</div>
+      <div class="stat" id="ivStat"></div>
+      <div class="iv-progress" id="ivProgress">
+        <div class="lbl" id="ivLbl"></div>
+        <div class="iv-dots" id="ivDots"></div>
+      </div>
+    </div>
   </aside>
+  <div id="backdrop" onclick="document.body.classList.remove('nav-open')"></div>
 
-  <div id="chat">
-    <div id="messages"></div>
-    <div id="inputbar">
-      <select id="mode" title="直连=不检索知识库；RAG=检索增强">
-        <option value="rag">RAG 增强模式</option>
-        <option value="ask">直连模式（无 RAG）</option>
-      </select>
-      <input type="text" id="question" placeholder="输入面试题，如：讲讲 HashMap 的扩容机制" onkeydown="if(event.key==='Enter')send()">
-      <button id="sendBtn" onclick="send()">发送</button>
+  <main>
+    <div id="scroller"><div class="thread" id="thread"></div></div>
+    <div class="composer-wrap">
+      <div class="composer">
+        <select id="modeSel" title="RAG=检索你的笔记作答；直连=裸模型（对照组）">
+          <option value="rag">RAG 增强</option>
+          <option value="ask">直连模式</option>
+        </select>
+        <textarea id="ta" rows="1" placeholder="输入面试题，如：讲讲 HashMap 的扩容机制" onkeydown="taKey(event)"></textarea>
+        <button id="sendBtn" onclick="sendClick()" title="发送（Enter）">➤</button>
+      </div>
+      <div class="composer-hint">Enter 发送 · Shift + Enter 换行 · 回答由 glm-4-flash 生成，引用来源为服务端检索事实</div>
     </div>
-  </div>
-</main>
+  </main>
+</div>
+
+<div id="toast"></div>
 
 <script>
-const sessionId = crypto.randomUUID();
-const messages = document.getElementById('messages');
+'use strict';
+/* ================= 状态与持久化 ================= */
+const LS_MSGS = 'ic.msgs.v2', LS_SID = 'ic.sessionId.v2';
+const thread = document.getElementById('thread');
+const scroller = document.getElementById('scroller');
+const ta = document.getElementById('ta');
+const sendBtn = document.getElementById('sendBtn');
+const modeSel = document.getElementById('modeSel');
 
-// 极简 Markdown 渲染：先转义 HTML，再加粗/行内代码
-function renderMd(text) {
-  let s = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
-  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-  return s;
+let sessionId = localStorage.getItem(LS_SID) || crypto.randomUUID();
+localStorage.setItem(LS_SID, sessionId);
+let msgs = [];
+try { msgs = JSON.parse(localStorage.getItem(LS_MSGS) || '[]'); } catch (e) { msgs = []; }
+let busy = false;           // 正在流式生成
+let aborter = null;         // AbortController
+const interview = { active: false, sessionId: null, questions: [], current: -1, topic: '' };
+
+function persist() { localStorage.setItem(LS_MSGS, JSON.stringify(msgs.slice(-80))); }
+function toast(t) {
+  const el = document.getElementById('toast');
+  el.textContent = t; el.classList.add('show');
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 1600);
+}
+function scrollBottom(force) {
+  const near = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140;
+  if (near || force) scroller.scrollTop = scroller.scrollHeight;
 }
 
-function addMsg(cls, html) {
+/* ================= Markdown 渲染（安全子集，先转义后格式化） ================= */
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function inlineMd(s) {
+  return s
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function md(src) {
+  if (!src) return '';
+  const blocks = [];
+  src = src.replace(/```(\w*)\n?([\s\S]*?)(?:```|$)/g, (m, lang, code) => {
+    blocks.push({ lang, code });
+    return '\u0000B' + (blocks.length - 1) + '\u0000';
+  });
+  const lines = esc(src).split('\n');
+  let html = '', para = [], list = null; // list: {tag, items}
+  const flushPara = () => { if (para.length) { html += '<p>' + inlineMd(para.join('<br>')) + '</p>'; para = []; } };
+  const flushList = () => { if (list) { html += `<${list.tag}>` + list.items.map(i => '<li>' + inlineMd(i) + '</li>').join('') + `</${list.tag}>`; list = null; } };
+  const flushAll = () => { flushPara(); flushList(); };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const t = line.trim();
+    const ph = t.match(/^\u0000B(\d+)\u0000$/);
+    if (ph) { flushAll(); const b = blocks[+ph[1]];
+      html += `<div class="codewrap"><div class="codehead"><span>${b.lang || 'code'}</span>` +
+        `<button class="copycode">复制代码</button></div>` +
+        `<pre><code>${esc(b.code.replace(/\n$/, ''))}</code></pre></div>`;
+      continue; }
+    if (!t) { flushAll(); continue; }
+    const h = t.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { flushAll(); const lv = Math.min(h[1].length + 1, 4); html += `<h${lv}>${inlineMd(h[2])}</h${lv}>`; continue; }
+    if (/^(-{3,}|\*{3,})$/.test(t)) { flushAll(); html += '<hr>'; continue; }
+    if (t.startsWith('>')) { flushAll(); const buf = [t.replace(/^>\s?/, '')];
+      while (i + 1 < lines.length && lines[i + 1].trim().startsWith('>')) { buf.push(lines[++i].trim().replace(/^>\s?/, '')); }
+      html += '<blockquote>' + inlineMd(buf.join('<br>')) + '</blockquote>'; continue; }
+    // 表格：当前行 | 开头且下一行是分隔行
+    if (t.startsWith('|') && i + 1 < lines.length && /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/.test(lines[i + 1].trim())) {
+      flushAll();
+      const cells = r => r.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      let head = '<tr>' + cells(t).map(c => '<th>' + inlineMd(c) + '</th>').join('') + '</tr>';
+      i += 2;
+      let rows = '';
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        rows += '<tr>' + cells(lines[i].trim()).map(c => '<td>' + inlineMd(c) + '</td>').join('') + '</tr>'; i++;
+      }
+      i--;
+      html += `<div class="tblwrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
+      continue; }
+    const ul = t.match(/^[-*]\s+(.*)$/), ol = t.match(/^\d+[.、]\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const tag = ul ? 'ul' : 'ol';
+      if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+      list.items.push((ul || ol)[1]); continue;
+    }
+    flushList(); para.push(t);
+  }
+  flushAll();
+  return html;
+}
+
+/* ================= 消息 DOM ================= */
+function addUserMsg(text) {
   const div = document.createElement('div');
-  div.className = 'msg ' + cls;
-  div.innerHTML = html;
-  messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
+  div.className = 'msg-user';
+  const b = document.createElement('div');
+  b.className = 'bubble'; b.textContent = text;
+  div.appendChild(b); thread.appendChild(div); scrollBottom(true);
+  msgs.push({ role: 'user', text }); persist();
   return div;
 }
 
-async function refreshStatus() {
-  try {
-    const h = await (await fetch('/api/health')).json();
-    document.getElementById('modelBadge').textContent = h.model + (h.llmKeyConfigured ? '' : ' · 未配置 Key');
-    document.getElementById('kbBadge').textContent = '知识库 ' + h.knowledgeFiles + ' 篇';
-  } catch (e) { /* ignore */ }
+function botShell(who) {
+  const div = document.createElement('div');
+  div.className = 'msg-bot';
+  div.innerHTML = `<div class="avatar">🤖</div><div class="content"><div class="who">${who || '面试拷打助手'}</div></div>`;
+  thread.appendChild(div); scrollBottom(true);
+  return div;
 }
 
-async function importPath() {
-  const path = document.getElementById('kbPath').value.trim();
-  if (!path) return;
-  const stat = document.getElementById('kbStat');
-  stat.textContent = '导入中…（大语料本地向量化约需几十秒）';
-  try {
-    const r = await fetch('/api/knowledge/import', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path })
+function makeStatus(container) {
+  const st = document.createElement('div');
+  st.className = 'statusline';
+  st.innerHTML = '<span class="dots"><i></i><i></i><i></i></span><span class="txt"></span>';
+  container.appendChild(st);
+  return {
+    set(t) { st.querySelector('.txt').textContent = t; },
+    remove() { st.remove(); }
+  };
+}
+
+/* 来源卡：同文件合并，取最高分 */
+function renderSources(container, sources) {
+  const box = document.createElement('div');
+  box.className = 'sources';
+  if (!sources || !sources.length) {
+    box.innerHTML = '<div class="src-none">知识库未命中（相似度低于 0.70 阈值），以下为模型通用回答，未引用任何笔记</div>';
+  } else {
+    const groups = [];
+    for (const s of sources) {
+      const g = groups.find(x => x.file === s.file);
+      if (g) { g.score = Math.max(g.score, s.score); g.n++; }
+      else groups.push({ file: s.file, score: s.score, snip: s.snippet, n: 1 });
+    }
+    box.innerHTML = '<div class="src-title">📄 检索引用（服务端检索事实，非模型自述）</div><div class="src-grid"></div>';
+    const grid = box.querySelector('.src-grid');
+    groups.slice(0, 4).forEach((g, i) => {
+      const pct = Math.max(6, Math.min(100, Math.round((g.score - 0.5) / 0.5 * 100)));
+      const c = document.createElement('div');
+      c.className = 'src-card';
+      c.title = g.snip || '';
+      c.innerHTML = `<span class="idx">${i + 1}</span><div style="flex:1;min-width:0">` +
+        `<div class="fname">${esc(g.file)}${g.n > 1 ? ` <span style="color:var(--faint);font-weight:400">×${g.n} 段</span>` : ''}</div>` +
+        `<div class="score-row"><div class="score-bar"><i style="width:${pct}%"></i></div>` +
+        `<span class="score-val">${g.score.toFixed(3)}</span></div>` +
+        (g.snip ? `<div class="snip">${esc(g.snip)}</div>` : '') + '</div>';
+      grid.appendChild(c);
     });
-    const d = await r.json();
-    stat.textContent = r.ok ? `✅ 新导入 ${d.importedFiles} 篇 / ${d.segments} 段（跳过 ${d.skippedFiles}）`
-                           : '❌ ' + (d.error || r.status);
-  } catch (e) { stat.textContent = '❌ ' + e.message; }
-  refreshStatus();
+  }
+  container.appendChild(box);
 }
 
-async function uploadFiles(files) {
-  if (!files.length) return;
-  const stat = document.getElementById('kbStat');
-  stat.textContent = '上传并导入中…';
-  const fd = new FormData();
-  for (const f of files) fd.append('files', f);
-  try {
-    const r = await fetch('/api/knowledge/upload', { method: 'POST', body: fd });
-    const d = await r.json();
-    stat.textContent = r.ok ? `✅ 新导入 ${d.importedFiles} 篇 / ${d.segments} 段（跳过 ${d.skippedFiles}）`
-                           : '❌ ' + (d.error || r.status);
-  } catch (e) { stat.textContent = '❌ ' + e.message; }
-  document.getElementById('fileInput').value = '';
-  refreshStatus();
+function msgfoot(contentEl, text, latencyMs) {
+  const f = document.createElement('div');
+  f.className = 'msgfoot always';
+  const btn = document.createElement('button');
+  btn.textContent = '📋 复制';
+  btn.onclick = () => copyText(text).then(() => toast('已复制到剪贴板'));
+  f.appendChild(btn);
+  if (latencyMs != null) {
+    const l = document.createElement('span');
+    l.className = 'lat'; l.textContent = latencyMs + ' ms';
+    f.appendChild(l);
+  }
+  contentEl.appendChild(f);
+}
+
+function addErrorMsg(text, retryQ, retryMode) {
+  const div = document.createElement('div');
+  div.className = 'msg-err';
+  const span = document.createElement('span'); span.textContent = '⚠ ' + text;
+  div.appendChild(span);
+  if (retryQ) {
+    const b = document.createElement('button');
+    b.textContent = '↻ 重试';
+    b.onclick = async () => { div.remove(); msgs = msgs.filter(m => !(m.role === 'error' && m.text === text)); persist(); await runStream(retryMode, retryQ, false); };
+    div.appendChild(b);
+  }
+  thread.appendChild(div); scrollBottom(true);
+  msgs.push({ role: 'error', text, q: retryQ, mode: retryMode }); persist();
+}
+
+/* ================= SSE 流式客户端 ================= */
+async function sse(url, payload, handlers, signal) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload), signal
+  });
+  if (!res.ok) {
+    let msg = 'HTTP ' + res.status;
+    try { const d = await res.json(); if (d.error) msg = d.error; } catch (e) { /* ignore */ }
+    throw new Error(msg);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      let ev = 'message', data = '';
+      for (const line of chunk.split('\n')) {
+        if (line.startsWith('event:')) ev = line.slice(6).trim();
+        else if (line.startsWith('data:')) data += (data ? '\n' : '') + line.slice(5).trim();
+      }
+      if (data && handlers[ev]) {
+        let parsed = data;
+        try { parsed = JSON.parse(data); } catch (e) { /* 原样传 */ }
+        handlers[ev](parsed);
+      }
+    }
+  }
+}
+
+/* ================= 发送主流程 ================= */
+function setComposer() {
+  sendBtn.textContent = busy ? '■' : '➤';
+  sendBtn.classList.toggle('stop', busy);
+  sendBtn.title = busy ? '停止生成' : '发送（Enter）';
+  ta.disabled = interview.active ? false : busy;
+}
+
+async function sendClick() {
+  if (busy) { if (aborter) aborter.abort(); return; }
+  send();
 }
 
 async function send() {
-  const input = document.getElementById('question');
-  const q = input.value.trim();
-  if (!q) return;
-  input.value = '';
-  const btn = document.getElementById('sendBtn');
-  btn.disabled = true;
+  const q = ta.value.trim();
+  if (!q || busy) return;
+  ta.value = ''; autosize();
+  document.body.classList.remove('nav-open');
 
-  // 面试模式：输入即当前题的回答
-  if (interview.active) {
-    addMsg('user', renderMd(q));
-    await submitAnswer(q, btn, input);
+  if (interview.active) { addUserMsg(q); await submitAnswer(q); return; }
+
+  addUserMsg(q);
+  await runStream(modeSel.value, q, false);
+}
+
+async function runStream(mode, q, addUser) {
+  busy = true; setComposer();
+  if (addUser) addUserMsg(q);
+
+  const shell = botShell();
+  const content = shell.querySelector('.content');
+  const status = makeStatus(content);
+  status.set(mode === 'rag' ? '正在检索知识库…' : '正在思考…');
+
+  const body = document.createElement('div');
+  body.className = 'body';
+  content.appendChild(body);
+
+  let text = '', sources = null, latency = null, gotError = null, firstToken = true;
+  aborter = new AbortController();
+
+  const renderText = () => {
+    body.innerHTML = md(text) + '<span class="cursor"></span>';
+    scrollBottom();
+  };
+  let raf = 0;
+  const scheduleRender = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderText(); }); };
+
+  try {
+    const url = mode === 'rag' ? '/api/chat/stream' : '/api/ask/stream';
+    const payload = mode === 'rag' ? { sessionId, question: q } : { question: q };
+    await sse(url, payload, {
+      sources(s) { sources = s; renderSources(content, s); status.set('已检索到参考资料，正在生成回答…'); },
+      token(t) {
+        if (firstToken) { firstToken = false; status.remove(); }
+        text += t; scheduleRender();
+      },
+      done(d) { latency = d.latencyMs; },
+      error(e) { gotError = e.error || '服务异常'; }
+    }, aborter.signal);
+  } catch (err) {
+    if (err.name === 'AbortError') { text += '\n\n（已手动停止生成）'; }
+    else gotError = err.message;
+  }
+  cancelAnimationFrame(raf); raf = 0;
+  aborter = null;
+
+  if (gotError) {
+    status.remove(); body.remove();
+    shell.remove();
+    busy = false; setComposer();
+    addErrorMsg(gotError, q, mode);
     return;
   }
 
-  addMsg('user', renderMd(q));
-  const mode = document.getElementById('mode').value;
-  const typing = addMsg('typing', mode === 'rag' ? '检索知识库并思考中…' : '思考中…');
-  try {
-    let r, d;
-    if (mode === 'rag') {
-      r = await fetch('/api/chat', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, question: q })
-      });
-      d = await r.json();
-    } else {
-      r = await fetch('/api/ask', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q })
-      });
-      d = await r.json();
-    }
-    typing.remove();
-    if (!r.ok) {
-      addMsg('error', '⚠ ' + (d.error || ('HTTP ' + r.status)));
-    } else if (mode === 'rag') {
-      let html = renderMd(d.answer);
-      if (d.sources && d.sources.length) {
-        html += '<div class="sources">' +
-          d.sources.map(s => `<span title="相似度 ${Number(s.score).toFixed(3)}">${s.file}</span>`).join('') +
-          '</div>';
-      } else {
-        html += '<div class="sources"><span>（知识库未命中，通用回答）</span></div>';
-      }
-      addMsg('bot', html);
-    } else {
-      addMsg('bot', renderMd(d.answer) + `<div class="sources"><span>直连模式 · ${d.latencyMs}ms</span></div>`);
-    }
-  } catch (e) {
-    typing.remove();
-    addMsg('error', '⚠ ' + e.message);
+  status.remove();
+  body.innerHTML = md(text);
+  if (sources == null && mode === 'ask') {
+    const n = document.createElement('div');
+    n.className = 'src-none'; n.textContent = '直连模式 · 未检索知识库';
+    content.appendChild(n);
+  } else if (sources == null) {
+    renderSources(content, []);
   }
-  btn.disabled = false;
-  input.focus();
+  msgfoot(content, text, latency);
+  scrollBottom();
+
+  msgs.push({ role: 'bot', text, sources: sources || [], latencyMs: latency, mode }); persist();
+  busy = false; setComposer(); ta.focus();
 }
 
-// ---------- 面试模式 ----------
-const interview = { active: false, sessionId: null, questions: [], current: -1, topic: '' };
-
+/* ================= 面试模式 ================= */
 async function loadTopics() {
   try {
     const d = await (await fetch('/api/interview/topics')).json();
     const sel = document.getElementById('topicSel');
     sel.innerHTML = (d.topics && d.topics.length)
-      ? d.topics.map(t => `<option value="${t}">${t}</option>`).join('') + '<option value="Java 后端">混合（全部）</option>'
-      : '<option value="Java 后端">Java 后端（知识库为空）</option>';
+      ? d.topics.map(t => `<option>${t}</option>`).join('') + '<option>Java 后端</option>'
+      : '<option>Java 后端</option>';
   } catch (e) { /* ignore */ }
+}
+
+function ivRefresh() {
+  const p = document.getElementById('ivProgress');
+  if (!interview.active) { p.style.display = 'none'; return; }
+  p.style.display = 'block'; // CSS 默认 display:none，置空内联样式无效，须显式 block
+  document.getElementById('ivLbl').textContent = `《${interview.topic}》 第 ${Math.min(interview.current + 1, interview.questions.length)} / ${interview.questions.length} 题`;
+  document.getElementById('ivDots').innerHTML = interview.questions.map((_, i) =>
+    `<i class="${i < interview.current ? 'done' : i === interview.current ? 'cur' : ''}"></i>`).join('');
+  document.getElementById('endBtn').style.display = '';
+  modeSel.disabled = true;
 }
 
 async function startInterview() {
@@ -237,28 +684,33 @@ async function startInterview() {
     });
     const d = await r.json();
     if (!r.ok) { stat.textContent = '❌ ' + (d.error || r.status); return; }
-    interview.active = true;
-    interview.sessionId = d.sessionId;
-    interview.questions = d.questions;
-    interview.current = 0;
-    interview.topic = d.topic;
-    document.getElementById('endBtn').style.display = '';
-    document.getElementById('mode').disabled = true;
-    addMsg('bot', `🎤 <b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。逐题作答，答完自动出下一题。`);
-    showQuestion();
-    stat.textContent = '';
+    interview.active = true; interview.sessionId = d.sessionId;
+    interview.questions = d.questions; interview.current = 0; interview.topic = d.topic;
+    stat.textContent = ''; ivRefresh();
+    const s = botShell('🎤 面试官');
+    const c = s.querySelector('.content');
+    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。逐题作答，答完自动出下一题。</blockquote></div>`);
+    msgs.push({ role: 'iv', html: c.querySelector('.body').outerHTML }); persist();
+    showQuestion(); scrollBottom(true);
+    ta.placeholder = '输入你的回答，回车提交';
   } catch (e) { stat.textContent = '❌ ' + e.message; }
 }
 
 function showQuestion() {
   const q = interview.questions[interview.current];
   if (q === undefined) { endInterview(true); return; }
-  addMsg('bot', `<b>第 ${interview.current + 1}/${interview.questions.length} 题：</b>${renderMd(q)}`);
-  document.getElementById('question').placeholder = '输入你的回答，回车提交';
+  const s = botShell('🎤 面试官');
+  s.querySelector('.content').insertAdjacentHTML('beforeend',
+    `<div class="body"><div class="iv-q"><span class="no">${interview.current + 1}/${interview.questions.length}</span><div>${md(q)}</div></div></div>`);
+  msgs.push({ role: 'ivq', text: q, no: (interview.current + 1) + '/' + interview.questions.length }); persist();
+  ivRefresh(); scrollBottom(true);
 }
 
-async function submitAnswer(answer, btn, input) {
-  const typing = addMsg('typing', '面试官批改中…');
+async function submitAnswer(answer) {
+  const shell = botShell('🎤 面试官');
+  const content = shell.querySelector('.content');
+  const status = makeStatus(content);
+  status.set('面试官批改中…');
   const question = interview.questions[interview.current];
   try {
     const r = await fetch('/api/interview/answer', {
@@ -266,43 +718,187 @@ async function submitAnswer(answer, btn, input) {
       body: JSON.stringify({ sessionId: interview.sessionId, question, answer })
     });
     const d = await r.json();
-    typing.remove();
-    if (!r.ok) { addMsg('error', '⚠ ' + (d.error || ('HTTP ' + r.status))); }
-    else {
-      const score = d.score >= 0 ? `<b style="font-size:18px;color:${d.score >= 7 ? 'var(--accent2)' : d.score >= 4 ? '#f0b429' : '#e06060'}">${d.score} / 10</b>` : '';
-      let html = `📋 ${score}`;
-      if (d.highlights && d.highlights.length) html += `\n✅ 亮点：` + d.highlights.map(renderMd).join('；');
-      if (d.gaps && d.gaps.length) html += `\n⚠️ 欠缺：` + d.gaps.map(renderMd).join('；');
-      if (d.reference) html += `\n📖 参考要点：` + renderMd(String(d.reference));
-      if (d.followUp) html += `\n🔗 面试官追问：<b>${renderMd(d.followUp)}</b>（可在下一题回答中回应）`;
-      if (d.sources && d.sources.length) {
-        html += '<div class="sources">' + d.sources.map(s => `<span>${s.file}</span>`).join('') + '</div>';
-      }
-      addMsg('bot', html);
-      interview.current++;
-      showQuestion();
-    }
-  } catch (e) { typing.remove(); addMsg('error', '⚠ ' + e.message); }
-  btn.disabled = false;
-  input.focus();
+    status.remove();
+    if (!r.ok) { shell.remove(); addErrorMsg(d.error || ('HTTP ' + r.status)); return; }
+    renderEval(content, d);
+    msgs.push({ role: 'eval', d }); persist();
+    interview.current++; ivRefresh(); showQuestion();
+  } catch (e) { status.remove(); shell.remove(); addErrorMsg(e.message); }
+  ta.focus();
+}
+
+function renderEval(content, d) {
+  const color = d.score >= 7 ? 'var(--green)' : d.score >= 4 ? 'var(--amber)' : 'var(--red)';
+  const bg = d.score >= 7 ? 'var(--green-soft)' : d.score >= 4 ? 'var(--amber-soft)' : 'var(--red-soft)';
+  const verdict = d.score >= 8 ? '回答扎实' : d.score >= 7 ? '回答良好' : d.score >= 4 ? '基本正确，细节欠缺' : '存在明显欠缺';
+  const box = document.createElement('div');
+  box.className = 'eval';
+  let h = `<div class="head"><div class="score-ring" style="color:${color};background:${bg};border:2px solid ${color}">${d.score}<span style="font-size:10px;font-weight:400">/10</span></div>` +
+    `<div class="verdict"><b>${verdict}</b>基于知识库笔记的评分</div></div>`;
+  if (d.highlights && d.highlights.length)
+    h += `<section class="good"><h4>✅ 亮点</h4><ul>${d.highlights.map(x => '<li>' + inlineMd(esc(String(x))) + '</li>').join('')}</ul></section>`;
+  if (d.gaps && d.gaps.length)
+    h += `<section class="bad"><h4>⚠️ 欠缺</h4><ul>${d.gaps.map(x => '<li>' + inlineMd(esc(String(x))) + '</li>').join('')}</ul></section>`;
+  if (d.reference)
+    h += `<details><summary>📖 参考要点（来自你的笔记）</summary><div class="body">${md(String(d.reference))}</div></details>`;
+  if (d.followUp)
+    h += `<div class="followup">🔗 <b>面试官追问：</b>${inlineMd(esc(String(d.followUp)))}（可在下一题回答中回应）</div>`;
+  box.innerHTML = h;
+  content.appendChild(box);
+  if (d.sources && d.sources.length) renderSources(content, d.sources);
+  scrollBottom(true);
 }
 
 function endInterview(finished) {
   if (interview.active) {
-    addMsg('bot', finished ? '🎤 <b>面试结束。</b>回顾上面的欠缺点，去知识库对应笔记里补一补。' : '🎤 面试已中止。');
+    const s = botShell('🎤 面试官');
+    s.querySelector('.content').insertAdjacentHTML('beforeend',
+      `<div class="body"><blockquote>${finished ? '<b>面试结束。</b>回顾上面的欠缺点，去知识库对应笔记里补一补。' : '面试已中止。'}</blockquote></div>`);
   }
-  interview.active = false;
-  interview.sessionId = null;
-  interview.questions = [];
-  interview.current = -1;
+  interview.active = false; interview.sessionId = null;
+  interview.questions = []; interview.current = -1;
   document.getElementById('endBtn').style.display = 'none';
-  document.getElementById('mode').disabled = false;
-  document.getElementById('question').placeholder = '输入面试题，如：讲讲 HashMap 的扩容机制';
+  modeSel.disabled = false;
+  ta.placeholder = '输入面试题，如：讲讲 HashMap 的扩容机制';
+  ivRefresh();
+}
+
+/* ================= 知识库面板 ================= */
+async function refreshStatus() {
+  try {
+    const h = await (await fetch('/api/health')).json();
+    document.getElementById('modelBadge').textContent = h.model + (h.llmKeyConfigured ? '' : ' · 未配置 Key');
+    document.getElementById('kbBadge').textContent = '知识库 ' + h.knowledgeFiles + ' 篇';
+  } catch (e) { /* ignore */ }
+}
+async function importPath() {
+  const path = document.getElementById('kbPath').value.trim();
+  if (!path) return;
+  const stat = document.getElementById('kbStat');
+  stat.textContent = '导入中…（本地向量化约需几十秒）';
+  try {
+    const r = await fetch('/api/knowledge/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path })
+    });
+    const d = await r.json();
+    stat.textContent = r.ok ? `✅ 新导入 ${d.importedFiles} 篇 / ${d.segments} 段（跳过 ${d.skippedFiles}）` : '❌ ' + (d.error || r.status);
+  } catch (e) { stat.textContent = '❌ ' + e.message; }
+  refreshStatus();
+}
+async function uploadFiles(files) {
+  if (!files.length) return;
+  const stat = document.getElementById('kbStat');
+  stat.textContent = '上传并导入中…';
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  try {
+    const r = await fetch('/api/knowledge/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    stat.textContent = r.ok ? `✅ 新导入 ${d.importedFiles} 篇 / ${d.segments} 段（跳过 ${d.skippedFiles}）` : '❌ ' + (d.error || r.status);
+  } catch (e) { stat.textContent = '❌ ' + e.message; }
+  document.getElementById('fileInput').value = '';
+  refreshStatus();
+}
+
+/* ================= 工具与输入行为 ================= */
+function copyText(t) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t);
+  return new Promise(res => {
+    const x = document.createElement('textarea');
+    x.value = t; x.style.position = 'fixed'; x.style.opacity = '0';
+    document.body.appendChild(x); x.select(); document.execCommand('copy'); x.remove(); res();
+  });
+}
+document.getElementById('thread').addEventListener('click', e => {
+  const b = e.target.closest('.copycode');
+  if (!b) return;
+  const code = b.closest('.codewrap').querySelector('pre code').textContent;
+  copyText(code).then(() => { b.textContent = '✓ 已复制'; setTimeout(() => b.textContent = '复制代码', 1400); });
+});
+
+function autosize() {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 170) + 'px';
+}
+ta.addEventListener('input', autosize);
+function taKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!busy) send(); }
+}
+
+function newChat() {
+  if (busy && aborter) aborter.abort();
+  if (interview.active) endInterview(false);
+  sessionId = crypto.randomUUID();
+  localStorage.setItem(LS_SID, sessionId);
+  msgs = []; persist();
+  renderAll();
+  toast('已开启新对话');
+}
+
+/* ================= 启动：恢复历史 / 空状态 ================= */
+const SUGGESTS = [
+  'HashMap 的扩容机制是怎样的？',
+  'Redis 缓存穿透、击穿、雪崩怎么防？',
+  'synchronized 的锁升级过程',
+  'TCP 为什么是三次握手？'
+];
+function emptyState() {
+  const div = document.createElement('div');
+  div.className = 'empty';
+  div.innerHTML = `<div class="logo">🎯</div><h2>面试拷打助手</h2>` +
+    `<p>51 篇八股笔记已向量化入库。随便问，答完附真实引用来源；<br>左侧「面试模式」可出题拷打你并逐题评分。</p>` +
+    `<div class="chips">${SUGGESTS.map(s => `<button>${s}</button>`).join('')}</div>`;
+  div.querySelectorAll('.chips button').forEach(b => b.onclick = () => { ta.value = b.textContent; send(); });
+  thread.appendChild(div);
+}
+function renderAll() {
+  thread.innerHTML = '';
+  if (!msgs.length) { emptyState(); return; }
+  for (const m of msgs) {
+    if (m.role === 'user') {
+      const d = document.createElement('div');
+      d.className = 'msg-user';
+      d.innerHTML = `<div class="bubble"></div>`;
+      d.querySelector('.bubble').textContent = m.text;
+      thread.appendChild(d);
+    } else if (m.role === 'bot') {
+      const s = botShell();
+      const c = s.querySelector('.content');
+      c.insertAdjacentHTML('beforeend', `<div class="body">${md(m.text)}</div>`);
+      if (m.mode === 'ask') c.insertAdjacentHTML('beforeend', '<div class="src-none">直连模式 · 未检索知识库</div>');
+      else renderSources(c, m.sources);
+      msgfoot(c, m.text, m.latencyMs);
+    } else if (m.role === 'error') {
+      const d = document.createElement('div');
+      d.className = 'msg-err';
+      d.innerHTML = `<span>⚠ ${esc(m.text)}</span>`;
+      if (m.q) {
+        const b = document.createElement('button');
+        b.textContent = '↻ 重试';
+        b.onclick = () => { d.remove(); msgs = msgs.filter(x => x !== m); persist(); runStream(m.mode, m.q, false); };
+        d.appendChild(b);
+      }
+      thread.appendChild(d);
+    } else if (m.role === 'iv') {
+      const s = botShell('🎤 面试官');
+      s.querySelector('.content').insertAdjacentHTML('beforeend', m.html);
+    } else if (m.role === 'ivq') {
+      const s = botShell('🎤 面试官');
+      s.querySelector('.content').insertAdjacentHTML('beforeend',
+        `<div class="body"><div class="iv-q"><span class="no">${m.no || 'Q'}</span><div>${md(m.text)}</div></div></div>`);
+    } else if (m.role === 'eval') {
+      const s = botShell('🎤 面试官');
+      renderEval(s.querySelector('.content'), m.d);
+    }
+  }
+  scrollBottom(true);
 }
 
 refreshStatus();
 loadTopics();
-addMsg('bot', '👋 我是你的**面试拷打助手**。知识库的笔记我已读完，随便问八股；\n左侧可选 **🎤 面试模式** 让我出题拷打你，答完给你打分。');
+renderAll();
+autosize();
 </script>
 </body>
 </html>

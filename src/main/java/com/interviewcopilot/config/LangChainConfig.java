@@ -1,6 +1,7 @@
 package com.interviewcopilot.config;
 
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,6 +27,21 @@ public class LangChainConfig {
                 .baseUrl(baseUrl)
                 // 未配置 key 时用占位符让应用仍能启动（/api/health 可用），
                 // 真正调用前由 Controller 拦截并给出友好提示
+                .apiKey(apiKey == null || apiKey.isBlank() ? "sk-not-configured" : apiKey)
+                .modelName(modelName)
+                .temperature(0.7)
+                .timeout(Duration.ofSeconds(90))
+                .build();
+    }
+
+    /** 流式版本（SSE 打字机效果），与同步版共用同一套配置 */
+    @Bean
+    public OpenAiStreamingChatModel streamingChatModel(
+            @Value("${llm.base-url}") String baseUrl,
+            @Value("${llm.api-key}") String apiKey,
+            @Value("${llm.model-name}") String modelName) {
+        return OpenAiStreamingChatModel.builder()
+                .baseUrl(baseUrl)
                 .apiKey(apiKey == null || apiKey.isBlank() ? "sk-not-configured" : apiKey)
                 .modelName(modelName)
                 .temperature(0.7)
