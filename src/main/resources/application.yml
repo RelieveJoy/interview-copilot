@@ -5,13 +5,13 @@ spring:
   application:
     name: interview-copilot
 
-# 大模型配置：OpenAI 兼容协议直连 DeepSeek。
+# 大模型配置：OpenAI 兼容协议直连智谱 GLM。
 # key 只从环境变量注入，永不写进代码或仓库。
-# 2026-10 实测 deepseek-chat 已下线，现行模型为 deepseek-flash (V4.1-Flash) / deepseek-v4-pro
+# glm-4-flash 为智谱免费档模型，课程演示零成本。
 llm:
-  base-url: https://api.deepseek.com/v1
-  model-name: deepseek-flash
-  api-key: ${DEEPSEEK_API_KEY:}
+  base-url: https://open.bigmodel.cn/api/paas/v4
+  model-name: glm-4-flash
+  api-key: ${ZHIPUAI_API_KEY:}
 
 # RAG 检索配置（400字/段 + 50重叠；bge 中文相似度带宽窄，0.70 为无关噪声分界）
 rag:

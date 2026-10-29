@@ -29,7 +29,7 @@
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
 
-    <!-- LLM 接入: DeepSeek 官方 API 兼容 OpenAI 协议, 用 openai 客户端直连 -->
+    <!-- LLM 接入: 智谱 GLM 官方 API 兼容 OpenAI 协议, 用 openai 客户端直连 -->
     <dependency>
       <groupId>dev.langchain4j</groupId>
       <artifactId>langchain4j-open-ai</artifactId>

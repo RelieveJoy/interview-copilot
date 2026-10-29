@@ -10,10 +10,9 @@ import java.time.Duration;
 /**
  * 大模型接入配置。
  *
- * DeepSeek 官方 API 兼容 OpenAI 协议（LangChain4j 无 deepseek 专用模块，
- * 官方推荐做法即用 openai 客户端指向 DeepSeek 端点）。
- * baseUrl / modelName 全部走配置文件，故障时改两行即可切换其他
- * OpenAI 兼容服务（如智谱 glm-4-flash）。
+ * 智谱 GLM 官方 API 兼容 OpenAI 协议，直接用 langchain4j-openai 客户端指向智谱端点。
+ * baseUrl / modelName 全部走配置文件，改两行即可切换其他
+ * OpenAI 兼容服务（如 DeepSeek、通义千问等）。
  */
 @Configuration
 public class LangChainConfig {

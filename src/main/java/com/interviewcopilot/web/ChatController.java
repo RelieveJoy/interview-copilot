@@ -135,7 +135,7 @@ public class ChatController {
 
     private ResponseEntity<Map<String, String>> keyMissing() {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(Map.of("error", "未配置 DEEPSEEK_API_KEY 环境变量，无法调用在线大模型"));
+                .body(Map.of("error", "未配置 ZHIPUAI_API_KEY 环境变量，无法调用在线大模型"));
     }
 
     private ResponseEntity<Map<String, String>> llmError(Exception e) {

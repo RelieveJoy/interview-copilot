@@ -3,7 +3,7 @@
 基于 **LangChain4j + Spring Boot 3** 的智能面试备战应用：把你的 Markdown 八股笔记变成可检索的知识库，
 支持 **RAG 引用溯源问答** 与 **模拟面试拷打**（LLM 出题 → 你作答 → 基于你的笔记评分 + 追问）。
 
-> 在线 DeepSeek 大模型 + 本地中文向量化（ONNX）的**混合架构**：一个 jar、一条命令跑起来，
+> 在线智谱 GLM 大模型 + 本地中文向量化（ONNX）的**混合架构**：一个 jar、一条命令跑起来，
 > 不需要部署任何向量数据库、不需要 embedding API key。
 
 ## ✨ 功能
@@ -30,32 +30,32 @@ flowchart LR
         KS[KnowledgeService<br/>加载→切分→向量化→检索]
         ES[InMemoryEmbeddingStore]
         EM[BgeSmallZhV15EmbeddingModel<br/>本地 ONNX · 512 维]
-        LLM[OpenAiChatModel<br/>→ DeepSeek API]
+        LLM[OpenAiChatModel<br/>→ 智谱 GLM API]
     end
-    DS[(DeepSeek<br/>deepseek-flash)]
+    ZP[(智谱开放平台<br/>glm-4-flash · 免费档)]
 
     UI -->|fetch| C --> A
     C --> KS
     KS --> EM
     KS --> ES
     A -->|检索增强| KS
-    A -->|生成| LLM -->|OpenAI 兼容协议| DS
+    A -->|生成| LLM -->|OpenAI 兼容协议| ZP
 ```
 
 **混合架构的取舍**（详见下文「设计决策」）：
 
-- **在线那一半**：对话生成用 DeepSeek `deepseek-flash`（V4.1-Flash，效果与成本兼顾，API 兼容 OpenAI 协议）
+- **在线那一半**：对话生成用智谱 `glm-4-flash`（免费档模型，课程演示零成本，API 兼容 OpenAI 协议）
 - **本地那一半**：中文向量化用 BAAI/bge-small-zh-v1.5 进程内 ONNX 模型——零 key、零部署、零网络开销；
   51 篇笔记全量向量化约 20 秒；向量存内存库（语料为百级段落，无需外部向量数据库）
 
 ## 🚀 快速开始（约 10 分钟）
 
-**前置**：JDK 21+、Maven 3.9+、一个 [DeepSeek API Key](https://platform.deepseek.com/)
+**前置**：JDK 21+、Maven 3.9+、一个 [智谱 API Key](https://open.bigmodel.cn/)（注册即送额度，`glm-4-flash` 免费）
 
 ```bash
 # 1. 配置 key（只进环境变量，永不进代码）
-#    Windows:  setx DEEPSEEK_API_KEY "sk-xxxx"   （新开终端生效）
-#    Linux/mac: export DEEPSEEK_API_KEY="sk-xxxx"
+#    Windows:  setx ZHIPUAI_API_KEY "xxxx.xxxx"   （新开终端生效）
+#    Linux/mac: export ZHIPUAI_API_KEY="xxxx.xxxx"
 
 # 2. 构建与运行（首次构建会下载约 250MB 依赖，含 52MB 中文向量模型）
 mvn -DskipTests package
@@ -92,21 +92,21 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `llm.base-url` | `https://api.deepseek.com/v1` | OpenAI 兼容端点，可换智谱等 |
-| `llm.model-name` | `deepseek-flash` | 模型名（DeepSeek 现行 flash 档） |
-| `llm.api-key` | `${DEEPSEEK_API_KEY:}` | 只从环境变量注入 |
+| `llm.base-url` | `https://open.bigmodel.cn/api/paas/v4` | OpenAI 兼容端点，可换 DeepSeek 等 |
+| `llm.model-name` | `glm-4-flash` | 模型名（智谱免费档，零成本） |
+| `llm.api-key` | `${ZHIPUAI_API_KEY:}` | 只从环境变量注入 |
 | `rag.segment-size` / `rag.segment-overlap` | 400 / 50 | 切分段长与重叠（字符） |
 | `rag.max-results` / `rag.min-score` | 4 / 0.70 | 检索条数与相似度阈值（实测中文无关噪声分界） |
 | `rag.auto-import-dir` | 空 | 启动时自动导入的语料目录 |
 
 ## 🧠 设计决策
 
-1. **为什么用 `langchain4j-open-ai` 直连 DeepSeek，而不是 DeepSeek 专用模块？**
-   Maven Central 上不存在 `langchain4j-deepseek` 构件；DeepSeek 官方 API 兼容 OpenAI 协议，
-   官方也推荐用 OpenAI SDK 接入。额外收益：`base-url`/`model-name` 全配置化，改两行即可切换任意
-   OpenAI 兼容服务（如智谱 `glm-4-flash`）。
-2. **为什么向量化跑在本地？** DeepSeek 不提供 embedding 接口；调用第三方 embedding API 需要
-   第二个 key 且产生网络延迟。bge-small-zh-v1.5 进程内 ONNX 模型 512 维中文向量，
+1. **为什么用 `langchain4j-open-ai` 直连智谱，而不是专用 SDK？**
+   智谱 GLM 官方 API 兼容 OpenAI 协议，直接复用 openai 客户端零额外依赖；
+   `base-url`/`model-name` 全配置化，改两行即可切换任意 OpenAI 兼容服务
+   （DeepSeek、通义千问、本地 Ollama 等）——本项目早期即从 DeepSeek 无缝迁移到智谱。
+2. **为什么向量化跑在本地？** 在线 embedding 接口按量计费、需要第二条网络链路；
+   bge-small-zh-v1.5 进程内 ONNX 模型 512 维中文向量，零 key、零网络开销、离线可用，
    质量/成本/部署复杂度三者的最优解。
 3. **为什么不用 Milvus 等向量数据库？** 语料为百级段落，内存库 `InMemoryEmbeddingStore`
    绰绰有余，答辩演示零依赖。
@@ -121,7 +121,7 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 src/main/java/com/interviewcopilot/
 ├── InterviewCopilotApplication.java   # 入口
 ├── config/
-│   ├── LangChainConfig.java           # OpenAiChatModel → DeepSeek
+│   ├── LangChainConfig.java           # OpenAiChatModel → 智谱 GLM
 │   ├── RagConfig.java                 # 本地 embedding + 内存向量库 + 检索器
 │   └── AssistantConfig.java           # AiServices 组装（记忆 + 检索增强）
 ├── service/
