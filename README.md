@@ -32,7 +32,7 @@ flowchart LR
         EM[BgeSmallZhV15EmbeddingModel<br/>本地 ONNX · 512 维]
         LLM[OpenAiChatModel<br/>→ DeepSeek API]
     end
-    DS[(DeepSeek<br/>deepseek-chat)]
+    DS[(DeepSeek<br/>deepseek-flash)]
 
     UI -->|fetch| C --> A
     C --> KS
@@ -44,7 +44,7 @@ flowchart LR
 
 **混合架构的取舍**（详见下文「设计决策」）：
 
-- **在线那一半**：对话生成用 DeepSeek `deepseek-chat`（效果与成本兼顾，API 兼容 OpenAI 协议）
+- **在线那一半**：对话生成用 DeepSeek `deepseek-flash`（V4.1-Flash，效果与成本兼顾，API 兼容 OpenAI 协议）
 - **本地那一半**：中文向量化用 BAAI/bge-small-zh-v1.5 进程内 ONNX 模型——零 key、零部署、零网络开销；
   51 篇笔记全量向量化约 20 秒；向量存内存库（语料为百级段落，无需外部向量数据库）
 
@@ -93,7 +93,7 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `llm.base-url` | `https://api.deepseek.com/v1` | OpenAI 兼容端点，可换智谱等 |
-| `llm.model-name` | `deepseek-chat` | 模型名 |
+| `llm.model-name` | `deepseek-flash` | 模型名（DeepSeek 现行 flash 档） |
 | `llm.api-key` | `${DEEPSEEK_API_KEY:}` | 只从环境变量注入 |
 | `rag.segment-size` / `rag.segment-overlap` | 400 / 50 | 切分段长与重叠（字符） |
 | `rag.max-results` / `rag.min-score` | 4 / 0.70 | 检索条数与相似度阈值（实测中文无关噪声分界） |

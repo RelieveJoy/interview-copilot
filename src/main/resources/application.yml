@@ -7,9 +7,10 @@ spring:
 
 # 大模型配置：OpenAI 兼容协议直连 DeepSeek。
 # key 只从环境变量注入，永不写进代码或仓库。
+# 2026-10 实测 deepseek-chat 已下线，现行模型为 deepseek-flash (V4.1-Flash) / deepseek-v4-pro
 llm:
   base-url: https://api.deepseek.com/v1
-  model-name: deepseek-chat
+  model-name: deepseek-flash
   api-key: ${DEEPSEEK_API_KEY:}
 
 # RAG 检索配置（400字/段 + 50重叠；bge 中文相似度带宽窄，0.70 为无关噪声分界）
