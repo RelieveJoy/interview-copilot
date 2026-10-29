@@ -1,0 +1,34 @@
+# Build
+target/
+build/
+out/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Maven wrapper 例外(保留脚本,忽略jar可留可去,这里保留全部以简化)
+# OS
+.DS_Store
+Thumbs.db
+
+# 本地配置与密钥 —— 任何情况下不允许真实 key 进入仓库
+*.env
+.env
+application-local.yml
+application-local.yaml
+application-secret.*
+
+# 日志
+*.log
+logs/
+
+# 前端(本项目用静态页,无构建产物,预留)
+node_modules/
