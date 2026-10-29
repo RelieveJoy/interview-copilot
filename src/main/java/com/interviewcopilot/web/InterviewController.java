@@ -61,7 +61,15 @@ public class InterviewController {
             return keyMissing();
         }
         String question = request.question() == null ? "" : request.question().trim();
-        return ResponseEntity.ok(interviewService.evaluate(question, request.answer().trim()));
+        // 从面试会话取主题，评分检索按主题重排（修正跨主题字面撞车）
+        String topic = null;
+        if (request.sessionId() != null && !request.sessionId().isBlank()) {
+            InterviewService.InterviewSession s = interviewService.session(request.sessionId().trim());
+            if (s != null) {
+                topic = s.topic();
+            }
+        }
+        return ResponseEntity.ok(interviewService.evaluate(question, request.answer().trim(), topic));
     }
 
     private ResponseEntity<Map<String, String>> keyMissing() {

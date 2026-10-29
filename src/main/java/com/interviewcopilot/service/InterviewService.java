@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -23,6 +24,7 @@ public class InterviewService {
     private static final Logger log = LoggerFactory.getLogger(InterviewService.class);
 
     private final OpenAiChatModel chatModel;
+    private final OpenAiChatModel evalChatModel;
     private final KnowledgeService knowledgeService;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -32,8 +34,11 @@ public class InterviewService {
     public record InterviewSession(String sessionId, String topic, List<String> questions) {
     }
 
-    public InterviewService(OpenAiChatModel chatModel, KnowledgeService knowledgeService) {
+    public InterviewService(OpenAiChatModel chatModel,
+                            @Qualifier("evalChatModel") OpenAiChatModel evalChatModel,
+                            KnowledgeService knowledgeService) {
         this.chatModel = chatModel;
+        this.evalChatModel = evalChatModel;
         this.knowledgeService = knowledgeService;
     }
 
@@ -83,9 +88,22 @@ public class InterviewService {
         return sessions.get(sessionId);
     }
 
-    /** 评分：检索知识库作为基准 → LLM 严格 JSON 评价。 */
-    public Map<String, Object> evaluate(String question, String userAnswer) {
-        List<KnowledgeService.KnowledgeHit> hits = knowledgeService.search(question);
+    /**
+     * 评分：检索知识库作为基准 → LLM 严格 JSON 评价。
+     * 检索按会话主题（文件名 "主题-" 前缀）限定语料——bge-small 对「锁」这类
+     * 跨主题字面撞车敏感，MySQL 锁问题会被几十个 Java 并发锁段落挤出 Top 位，
+     * 限定后既给模型正确基准，检索引用也对得上领域。
+     */
+    public Map<String, Object> evaluate(String question, String userAnswer, String topic) {
+        List<KnowledgeService.KnowledgeHit> hits;
+        if (topic != null && !topic.isBlank()) {
+            hits = knowledgeService.searchInFiles(question, topic.trim() + "-", 4);
+        } else {
+            hits = List.of();
+        }
+        if (hits.isEmpty()) { // 主题下无命中（如「Java 后端」无此前缀）→ 退回全局检索
+            hits = knowledgeService.search(question, 4);
+        }
 
         StringBuilder sb = new StringBuilder("""
                 你是严格的 Java 面试官。请评价候选人的回答。
@@ -93,11 +111,17 @@ public class InterviewService {
                 面试题：%s
 
                 候选人回答：%s
+
+                评分铁律（违反任何一条即为错误评价）：
+                1. 只依据「候选人回答」本身判分。下方参考资料仅供你了解标准答案，绝不能把资料里的内容当作候选人说过的话。
+                2. highlights 只能转述候选人回答中真实出现的内容，回答里没有的一个字都不许写。
+                3. 候选人回答为空、仅寒暄（如"你好"）、或与题目完全无关时：score 只能给 0 或 1，highlights 必须是空数组 []，gaps 写明"未有效作答"。
+                4. 吝啬给分：答对核心概念 5-6 分，补齐关键细节与深度才继续往上加。
                 """.formatted(question, userAnswer));
         if (hits.isEmpty()) {
             sb.append("\n（知识库未检索到相关资料，按通用标准评价）");
         } else {
-            sb.append("\n评分参考资料（候选人看不到，作为评分基准）：");
+            sb.append("\n评分参考资料（仅供了解标准答案；若与题目领域不符请忽略，按通用标准评价）：");
             for (int i = 0; i < hits.size(); i++) {
                 sb.append("\n[").append(i + 1).append("] 来源: ").append(hits.get(i).file())
                   .append("\n").append(hits.get(i).text(), 0, Math.min(500, hits.get(i).text().length()));
@@ -109,8 +133,13 @@ public class InterviewService {
                 {"score": 0到10的整数, "highlights": ["回答亮点", ...], "gaps": ["欠缺/错误", ...],
                  "followUp": "一个更深层的追问", "reference": "基于参考资料的答题要点, 120字内"}""");
 
-        String raw = chatModel.chat(sb.toString());
+        String raw = evalChatModel.chat(sb.toString());
         Map<String, Object> result = parseObject(raw);
+        // 硬闸：无效作答（≤1 分）不允许带任何亮点，防止模型把寒暄原话当亮点
+        Object sc = result.get("score");
+        if (sc instanceof Number n && n.intValue() <= 1) {
+            result.put("highlights", List.of());
+        }
         result.put("question", question);
         result.put("sources", hits.stream().map(h -> Map.of(
                 "file", h.file(), "score", h.score())).toList());

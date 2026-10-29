@@ -151,6 +151,11 @@ public class KnowledgeService {
 
     /** 向量检索：问题 → 相似度最高的若干知识段。 */
     public List<KnowledgeHit> search(String question) {
+        return search(question, maxResults);
+    }
+
+    /** 指定召回条数的重载（面试评分按主题重排时需要更多候选）。 */
+    public List<KnowledgeHit> search(String question, int maxResults) {
         Embedding queryVector = embeddingModel.embed(question).content();
         EmbeddingSearchResult<TextSegment> result = embeddingStore.search(EmbeddingSearchRequest.builder()
                 .queryEmbedding(queryVector)
@@ -165,6 +170,29 @@ public class KnowledgeService {
                 .toList();
         log.debug("检索 '{}' 命中 {} 段", question, hits.size());
         return hits;
+    }
+
+    /**
+     * 限定在文件名以 filePrefix 开头的笔记内检索（面试评分按主题限定语料）。
+     * 背景：bge-small 对「锁」这类跨主题字面撞车敏感——MySQL 锁问题会被几十个
+     * Java 并发锁段落压到 30 名开外，全局检索捞不到，故全库过采样后按前缀过滤。
+     * 内存向量库几百段规模，全量打分本就是每次检索的实际开销，无额外成本。
+     */
+    public List<KnowledgeHit> searchInFiles(String question, String filePrefix, int limit) {
+        Embedding queryVector = embeddingModel.embed(question).content();
+        EmbeddingSearchResult<TextSegment> result = embeddingStore.search(EmbeddingSearchRequest.builder()
+                .queryEmbedding(queryVector)
+                .maxResults(512)
+                .minScore(minScore)
+                .build());
+        return result.matches().stream()
+                .map((EmbeddingMatch<TextSegment> m) -> new KnowledgeHit(
+                        m.embedded().metadata().getString("source"),
+                        m.score() == null ? 0.0 : m.score(),
+                        m.embedded().text()))
+                .filter(h -> h.file() != null && h.file().startsWith(filePrefix))
+                .limit(limit)
+                .toList();
     }
 
     public int importedFileCount() {

@@ -48,4 +48,19 @@ public class LangChainConfig {
                 .timeout(Duration.ofSeconds(90))
                 .build();
     }
+
+    /** 面试评分专用：temperature=0 保证同一作答多次评分结果一致（创意交给出题模型） */
+    @Bean
+    public OpenAiChatModel evalChatModel(
+            @Value("${llm.base-url}") String baseUrl,
+            @Value("${llm.api-key}") String apiKey,
+            @Value("${llm.model-name}") String modelName) {
+        return OpenAiChatModel.builder()
+                .baseUrl(baseUrl)
+                .apiKey(apiKey == null || apiKey.isBlank() ? "sk-not-configured" : apiKey)
+                .modelName(modelName)
+                .temperature(0.0)
+                .timeout(Duration.ofSeconds(90))
+                .build();
+    }
 }

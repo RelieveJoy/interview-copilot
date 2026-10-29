@@ -104,11 +104,13 @@ public class KnowledgeController {
 
     /** 检索诊断：只走向量检索不调 LLM，用于验证知识库命中质量（零 token 消耗） */
     @GetMapping("/search")
-    public ResponseEntity<?> search(@RequestParam("q") String q) {
+    public ResponseEntity<?> search(@RequestParam("q") String q,
+                                    @RequestParam(value = "limit", defaultValue = "4") int limit) {
         if (q == null || q.isBlank()) {
             return ResponseEntity.badRequest().body(Map.of("error", "q 不能为空"));
         }
-        List<Map<String, Object>> hits = knowledgeService.search(q).stream()
+        int n = Math.max(1, Math.min(50, limit));
+        List<Map<String, Object>> hits = knowledgeService.search(q, n).stream()
                 .map(h -> Map.<String, Object>of(
                         "file", h.file(),
                         "score", h.score(),

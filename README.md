@@ -85,7 +85,7 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 | POST | `/api/knowledge/import` | `{"path":"目录或.md文件"}` → 批量导入 |
 | POST | `/api/knowledge/upload` | multipart `files` → 上传导入 |
 | GET | `/api/knowledge/status` | 已导入文件数 |
-| GET | `/api/knowledge/search?q=` | 检索诊断（只走向量检索，零 token 消耗） |
+| GET | `/api/knowledge/search?q=&limit=N` | 检索诊断（只走向量检索，零 token 消耗；limit 默认 4） |
 | GET | `/api/interview/topics` | 从笔记文件名前缀提取的面试主题 |
 | POST | `/api/interview/start` | `{"topic","count"}` → 生成题目列表 |
 | POST | `/api/interview/answer` | `{"sessionId","question","answer"}` → 评分 JSON |
