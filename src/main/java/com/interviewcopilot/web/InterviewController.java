@@ -3,6 +3,7 @@ package com.interviewcopilot.web;
 import com.interviewcopilot.service.InterviewService;
 import com.interviewcopilot.web.dto.InterviewAnswerRequest;
 import com.interviewcopilot.web.dto.InterviewStartRequest;
+import com.interviewcopilot.web.dto.InterviewTurnRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,7 +19,8 @@ import java.util.Map;
  * 面试模式接口：
  *  - GET  /api/interview/topics          可选主题（来自知识库文件名前缀）
  *  - POST /api/interview/start           开始面试，生成题目
- *  - POST /api/interview/answer          提交回答，获得评分 + 追问
+ *  - POST /api/interview/turn            拷打循环：一轮作答 → 追问 或 打分进下一题
+ *  - POST /api/interview/answer          单轮评分（无状态诊断用，前端拷打走 /turn）
  */
 @RestController
 @RequestMapping("/api/interview")
@@ -47,9 +49,9 @@ public class InterviewController {
         int count = (request == null || request.count() == null) ? 5 : request.count();
         InterviewService.InterviewSession session = interviewService.start(topic, count);
         return ResponseEntity.ok(Map.of(
-                "sessionId", session.sessionId(),
-                "topic", session.topic(),
-                "questions", session.questions()));
+                "sessionId", session.getSessionId(),
+                "topic", session.getTopic(),
+                "questions", session.getQuestions()));
     }
 
     @PostMapping("/answer")
@@ -66,10 +68,37 @@ public class InterviewController {
         if (request.sessionId() != null && !request.sessionId().isBlank()) {
             InterviewService.InterviewSession s = interviewService.session(request.sessionId().trim());
             if (s != null) {
-                topic = s.topic();
+                topic = s.getTopic();
             }
         }
         return ResponseEntity.ok(interviewService.evaluate(question, request.answer().trim(), topic));
+    }
+
+    /**
+     * 拷打循环（前端面试模式走这里）：一轮作答 → 追问 或 打分进下一题。
+     * giveUp=true 表示候选人放弃本题，直接终评。
+     */
+    @PostMapping("/turn")
+    public ResponseEntity<?> turn(@RequestBody(required = false) InterviewTurnRequest request) {
+        if (request == null || request.sessionId() == null || request.sessionId().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "sessionId 不能为空"));
+        }
+        String answer = request.answer() == null ? "" : request.answer().trim();
+        boolean giveUp = Boolean.TRUE.equals(request.giveUp());
+        if (answer.isEmpty() && !giveUp) {
+            return ResponseEntity.badRequest().body(Map.of("error", "answer 不能为空"));
+        }
+        if (!apiKeyConfigured) {
+            return keyMissing();
+        }
+        try {
+            return ResponseEntity.ok(interviewService.turn(request.sessionId(), answer, giveUp));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body(Map.of("error", "调用大模型失败：" + e.getMessage()));
+        }
     }
 
     private ResponseEntity<Map<String, String>> keyMissing() {

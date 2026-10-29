@@ -88,7 +88,8 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 | GET | `/api/knowledge/search?q=&limit=N` | 检索诊断（只走向量检索，零 token 消耗；limit 默认 4） |
 | GET | `/api/interview/topics` | 从笔记文件名前缀提取的面试主题 |
 | POST | `/api/interview/start` | `{"topic","count"}` → 生成题目列表 |
-| POST | `/api/interview/answer` | `{"sessionId","question","answer"}` → 评分 JSON |
+| POST | `/api/interview/turn` | `{"sessionId","answer","giveUp?"}` → 拷打循环一轮：继续追问 或 终评+下一题 |
+| POST | `/api/interview/answer` | `{"sessionId","question","answer"}` → 单轮评分（无状态诊断用） |
 
 ## ⚙️ 配置项（application.yml）
 
@@ -151,7 +152,7 @@ src/main/resources/
 - **SSE 流式打字机**：`sources` 事件先于生成到达——先看检索到了哪些笔记，再看回答逐字输出（两阶段状态提示），支持随时「停止生成」
 - **文档式消息布局**：回答通栏渲染（非气泡），手写 Markdown 渲染器——代码块带语言标签和一键复制、GFM 表格、加粗/引用/列表，流式半成品代码块也能正确渲染
 - **引用溯源卡片**：按来源文件分组、每段命中带相似度条与片段预览，引用是服务端检索事实而非模型自述
-- **面试模式**：侧栏进度点实时显示第几题，评分卡带环形分数（按分数着色）、亮点/欠缺清单、参考答案折叠、追问区块
+- **面试拷打循环**：每题面试官刨根追问（最多 3 轮，答不上可一键「直接打分」），追问到底才终评换下一题；答完出逐题得分汇总卡。评分卡只展示分数/亮点/欠缺/参考要点——检索引用不呈现在界面，改为服务端 `[面试留痕]` 日志（每轮判定、追问、终评、得分台账全量落日志）
 - **工程细节**：空状态建议问题一键发送、Enter/Shift+Enter、输入框自增高、失败重试卡、对话记录 localStorage 持久化（刷新不丢）
 
 ## 🧪 实测评测（2026-10-29 · glm-4-flash · 51 篇真实笔记）

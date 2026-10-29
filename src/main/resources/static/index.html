@@ -204,6 +204,9 @@
 
   /* 面试模式消息 */
   .iv-q { display: flex; gap: 10px; align-items: baseline; }
+  .iv-q .no.fu { background: var(--amber-soft); color: var(--amber); }
+  .sumrow { display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border-bottom: 1px dashed var(--border); font-size: 13px; }
+  .sumrow:last-child { border-bottom: none; }
   .iv-q .no {
     flex-shrink: 0; font-size: 12px; background: var(--accent-soft); color: var(--accent);
     border: 1px solid rgba(79,124,255,.4); border-radius: 6px; padding: 2px 8px; font-family: var(--mono);
@@ -312,6 +315,7 @@
       <input type="text" id="qCount" placeholder="题数（默认 5）" inputmode="numeric">
       <button class="btn" onclick="startInterview()">开始拷打</button>
       <button class="btn ghost" id="endBtn" style="display:none" onclick="endInterview(false)">⛔ 结束面试</button>
+      <button class="btn ghost" id="giveUpBtn" style="display:none" onclick="giveUpClick()">🏳 答不上来，直接打分</button>
       <div class="hint">出题 → 你作答 → 面试官基于你的笔记评分、指出欠缺并追问。</div>
       <div class="stat" id="ivStat"></div>
       <div class="iv-progress" id="ivProgress">
@@ -669,6 +673,7 @@ function ivRefresh() {
   document.getElementById('ivDots').innerHTML = interview.questions.map((_, i) =>
     `<i class="${i < interview.current ? 'done' : i === interview.current ? 'cur' : ''}"></i>`).join('');
   document.getElementById('endBtn').style.display = '';
+  document.getElementById('giveUpBtn').style.display = '';
   modeSel.disabled = true;
 }
 
@@ -689,7 +694,7 @@ async function startInterview() {
     stat.textContent = ''; ivRefresh();
     const s = botShell('🎤 面试官');
     const c = s.querySelector('.content');
-    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。逐题作答，答完自动出下一题。</blockquote></div>`);
+    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。每题面试官会刨根追问（最多 3 轮），追问到底才打分、进入下一题；答不上来可随时点左侧「直接打分」。</blockquote></div>`);
     msgs.push({ role: 'iv', html: c.querySelector('.body').outerHTML }); persist();
     showQuestion(); scrollBottom(true);
     ta.placeholder = '输入你的回答，回车提交';
@@ -706,25 +711,70 @@ function showQuestion() {
   ivRefresh(); scrollBottom(true);
 }
 
-async function submitAnswer(answer) {
+let ivBusy = false;
+
+async function submitAnswer(answer, giveUp = false) {
+  if (ivBusy) return;
+  ivBusy = true;
+  const giveUpBtn = document.getElementById('giveUpBtn');
+  giveUpBtn.disabled = true;
   const shell = botShell('🎤 面试官');
   const content = shell.querySelector('.content');
   const status = makeStatus(content);
-  status.set('面试官批改中…');
-  const question = interview.questions[interview.current];
+  status.set('面试官思考中…');
   try {
-    const r = await fetch('/api/interview/answer', {
+    const r = await fetch('/api/interview/turn', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: interview.sessionId, question, answer })
+      body: JSON.stringify({ sessionId: interview.sessionId, answer, giveUp: !!giveUp })
     });
     const d = await r.json();
     status.remove();
     if (!r.ok) { shell.remove(); addErrorMsg(d.error || ('HTTP ' + r.status)); return; }
+    if (d.type === 'followup') {
+      // 面试官继续刨根：本题不结束，等下一轮作答
+      content.insertAdjacentHTML('beforeend',
+        `<div class="body"><div class="iv-q"><span class="no fu">追问 ${d.round}/${d.maxRounds}</span><div>${md(d.followUp)}</div></div></div>`);
+      msgs.push({ role: 'ivf', text: d.followUp, r: d.round, max: d.maxRounds }); persist();
+      scrollBottom(true);
+      return;
+    }
+    // 本题终评
     renderEval(content, d);
-    msgs.push({ role: 'eval', d }); persist();
-    interview.current++; ivRefresh(); showQuestion();
+    msgs.push({ role: 'eval', d: { score: d.score, highlights: d.highlights, gaps: d.gaps, reference: d.reference, rounds: d.rounds } }); persist();
+    if (d.done) {
+      renderSummary(d.scores);
+      endInterview(true);
+      return;
+    }
+    interview.current = d.nextIndex; ivRefresh(); showQuestion();
   } catch (e) { status.remove(); shell.remove(); addErrorMsg(e.message); }
+  finally { ivBusy = false; giveUpBtn.disabled = false; }
   ta.focus();
+}
+
+function giveUpClick() {
+  if (!interview.active || ivBusy) return;
+  addUserMsg('🏳 这题答不上来了，直接打分');
+  submitAnswer('这题我答不上来了，直接打分吧', true);
+}
+
+function renderSummaryCard(scores) {
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const cAll = v => v >= 7 ? 'var(--green)' : v >= 4 ? 'var(--amber)' : 'var(--red)';
+  const bg = avg >= 7 ? 'var(--green-soft)' : avg >= 4 ? 'var(--amber-soft)' : 'var(--red-soft)';
+  const s = botShell('🎤 面试官');
+  const c = s.querySelector('.content');
+  c.insertAdjacentHTML('beforeend', `<div class="body"><div class="eval">` +
+    `<div class="head"><div class="score-ring" style="color:${cAll(avg)};background:${bg};border:2px solid ${cAll(avg)}">${avg.toFixed(1)}<span style="font-size:10px;font-weight:400">/10</span></div>` +
+    `<div class="verdict"><b>面试完成 · 共 ${scores.length} 题</b>平均分与逐题得分</div></div>` +
+    scores.map((v, i) => `<div class="sumrow"><span>第 ${i + 1} 题</span><b style="color:${cAll(v)}">${v}/10</b></div>`).join('') +
+    `</div></div>`);
+  scrollBottom(true);
+}
+
+function renderSummary(scores) {
+  renderSummaryCard(scores);
+  msgs.push({ role: 'ivsum', scores }); persist();
 }
 
 function renderEval(content, d) {
@@ -734,18 +784,15 @@ function renderEval(content, d) {
   const box = document.createElement('div');
   box.className = 'eval';
   let h = `<div class="head"><div class="score-ring" style="color:${color};background:${bg};border:2px solid ${color}">${d.score}<span style="font-size:10px;font-weight:400">/10</span></div>` +
-    `<div class="verdict"><b>${verdict}</b>基于知识库笔记的评分</div></div>`;
+    `<div class="verdict"><b>${verdict}</b>基于知识库笔记的评分${d.rounds ? ' · 经 ' + d.rounds + ' 轮追问' : ''}</div></div>`;
   if (d.highlights && d.highlights.length)
     h += `<section class="good"><h4>✅ 亮点</h4><ul>${d.highlights.map(x => '<li>' + inlineMd(esc(String(x))) + '</li>').join('')}</ul></section>`;
   if (d.gaps && d.gaps.length)
     h += `<section class="bad"><h4>⚠️ 欠缺</h4><ul>${d.gaps.map(x => '<li>' + inlineMd(esc(String(x))) + '</li>').join('')}</ul></section>`;
   if (d.reference)
     h += `<details><summary>📖 参考要点（来自你的笔记）</summary><div class="body">${md(String(d.reference))}</div></details>`;
-  if (d.followUp)
-    h += `<div class="followup">🔗 <b>面试官追问：</b>${inlineMd(esc(String(d.followUp)))}（可在下一题回答中回应）</div>`;
   box.innerHTML = h;
   content.appendChild(box);
-  if (d.sources && d.sources.length) renderSources(content, d.sources);
   scrollBottom(true);
 }
 
@@ -758,6 +805,7 @@ function endInterview(finished) {
   interview.active = false; interview.sessionId = null;
   interview.questions = []; interview.current = -1;
   document.getElementById('endBtn').style.display = 'none';
+  document.getElementById('giveUpBtn').style.display = 'none';
   modeSel.disabled = false;
   ta.placeholder = '输入面试题，如：讲讲 HashMap 的扩容机制';
   ivRefresh();
@@ -891,6 +939,12 @@ function renderAll() {
     } else if (m.role === 'eval') {
       const s = botShell('🎤 面试官');
       renderEval(s.querySelector('.content'), m.d);
+    } else if (m.role === 'ivf') {
+      const s = botShell('🎤 面试官');
+      s.querySelector('.content').insertAdjacentHTML('beforeend',
+        `<div class="body"><div class="iv-q"><span class="no fu">追问 ${m.r}/${m.max}</span><div>${md(m.text)}</div></div></div>`);
+    } else if (m.role === 'ivsum') {
+      renderSummaryCard(m.scores);
     }
   }
   scrollBottom(true);
