@@ -1,0 +1,26 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: interview-copilot
+
+# 大模型配置：OpenAI 兼容协议直连 DeepSeek。
+# key 只从环境变量注入，永不写进代码或仓库。
+llm:
+  base-url: https://api.deepseek.com/v1
+  model-name: deepseek-chat
+  api-key: ${DEEPSEEK_API_KEY:}
+
+# RAG 检索配置（400字/段 + 50重叠；bge 中文相似度带宽窄，0.70 为无关噪声分界）
+rag:
+  segment-size: 400
+  segment-overlap: 50
+  max-results: 4
+  min-score: 0.70
+  # 启动时自动导入的语料目录（留空则手动调 /api/knowledge/import）
+  auto-import-dir: ""
+
+logging:
+  level:
+    root: info
