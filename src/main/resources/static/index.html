@@ -746,6 +746,7 @@ async function submitAnswer(answer, giveUp = false) {
       endInterview(true);
       return;
     }
+    if (d.nextQuestion) interview.questions[d.nextIndex] = d.nextQuestion; // 服务端查重可能换题，同步本地题目
     interview.current = d.nextIndex; ivRefresh(); showQuestion();
   } catch (e) { status.remove(); shell.remove(); addErrorMsg(e.message); }
   finally { ivBusy = false; giveUpBtn.disabled = false; }

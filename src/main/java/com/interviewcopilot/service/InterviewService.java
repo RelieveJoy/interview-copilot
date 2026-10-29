@@ -55,6 +55,7 @@ public class InterviewService {
         private int followUps;                                 // 本题已追问次数
         private final List<String> chain = new ArrayList<>();   // 本题对话链：回答,追问,回答,追问…
         private final List<Integer> scores = new ArrayList<>(); // 已完成题的得分
+        private final List<String> coveredNotes = new ArrayList<>(); // 每题已考内容留档（题干+追问），供下一题查重
 
         InterviewSession(String sessionId, String topic, List<String> questions) {
             this.sessionId = sessionId;
@@ -94,8 +95,8 @@ public class InterviewService {
         try {
             String prompt = """
                     你是资深 Java 面试官。围绕主题「%s」出 %d 道高频面试拷问题，要求：
-                    由浅入深、可口头作答、覆盖该主题核心考点，不要和别的主题混杂。
-                    只输出一个 JSON 字符串数组，形如 ["问题1","问题2"]，不要任何多余文字。"""
+                    由浅入深、可口头作答、覆盖该主题核心考点，不要和别的主题混杂，各题考点相互独立不重叠。
+                    题目必须是中文。只输出一个 JSON 字符串数组，形如 ["问题1","问题2"]，不要任何多余文字。"""
                     .formatted(safeTopic, n);
             questions = parseArray(chatModel.chat(prompt));
             if (questions.size() > n) {
@@ -112,7 +113,8 @@ public class InterviewService {
         }
 
         String sessionId = UUID.randomUUID().toString().substring(0, 8);
-        InterviewSession session = new InterviewSession(sessionId, safeTopic, questions);
+        // 拷贝成可变列表：查重闸换题时要原地替换某道题
+        InterviewSession session = new InterviewSession(sessionId, safeTopic, new ArrayList<>(questions));
         sessions.put(sessionId, session);
         return session;
     }
@@ -147,7 +149,7 @@ public class InterviewService {
 
                 评分铁律（违反任何一条即为错误评价）：
                 1. 只依据「候选人回答」本身判分。下方参考资料仅供你了解标准答案，绝不能把资料里的内容当作候选人说过的话。
-                2. highlights 只能转述候选人回答中真实出现的内容，回答里没有的一个字都不许写。
+                2. highlights 给 2-4 条，每条摘录候选人回答中的原话关键句（可截取），回答里没有的一个字都不许写。
                 3. 候选人回答为空、仅寒暄（如"你好"）、或与题目完全无关时：score 只能给 0 或 1，highlights 必须是空数组 []，gaps 写明"未有效作答"。
                 4. 吝啬给分：答对核心概念 5-6 分，补齐关键细节与深度才继续往上加。
                 """.formatted(question, userAnswer));
@@ -229,6 +231,29 @@ public class InterviewService {
             decision.put("gaps", ev.getOrDefault("gaps", List.of()));
             decision.put("reference", ev.getOrDefault("reference", ""));
         }
+        // 硬闸 3（综合打分）：实测小模型会把最后的"不知道"锚定成 0 分、把此前答对的内容清零——
+        // 提示词叮嘱拦不住。放弃轮本身不进评分语料：剔除放弃轮，用此前各轮候选人作答重新评。
+        if (bail && s.chain.size() >= 3) {
+            List<String> prior = new ArrayList<>();
+            for (int i = 0; i < s.chain.size() - 1; i += 2) {
+                prior.add(s.chain.get(i));
+            }
+            Map<String, Object> ev = evaluate(question, String.join("\n", prior), s.topic);
+            int es = ev.get("score") instanceof Number n3 ? n3.intValue() : -1;
+            if (es >= 0) {
+                log.info("[面试留痕] session={} 题{} 放弃轮综合重评：judge={} → 综合={}",
+                        s.sessionId, s.current + 1, score, es);
+                score = es;
+                decision.put("highlights", ev.getOrDefault("highlights", List.of()));
+                List<Object> gaps2 = new ArrayList<>();
+                if (ev.get("gaps") instanceof List<?> gl) {
+                    gaps2.addAll(gl);
+                }
+                gaps2.add("追问「" + s.chain.get(s.chain.size() - 2) + "」未能作答");
+                decision.put("gaps", gaps2);
+                decision.put("reference", ev.getOrDefault("reference", ""));
+            }
+        }
         if (score <= 1) { // 硬闸：无效作答不允许带亮点
             decision.put("highlights", List.of());
         }
@@ -246,6 +271,21 @@ public class InterviewService {
         int rounds = s.followUps;
         log.info("[面试留痕] session={} 题{} 终评 score={}（追问{}轮）总分台账={} 欠缺={}",
                 s.sessionId, s.current + 1, score, rounds, allScores, decision.get("gaps"));
+
+        // 留档本题已考内容（题干 + 实际追问过的问题），推进下一题前据此查重
+        StringBuilder covered = new StringBuilder("题").append(s.current + 1).append("「")
+                .append(question).append("」");
+        if (s.chain.size() > 1) {
+            covered.append("（已追问：");
+            for (int i = 1; i < s.chain.size(); i += 2) {
+                covered.append(s.chain.get(i)).append("；");
+            }
+            covered.append("）");
+        }
+        s.coveredNotes.add(covered.toString());
+        if (!done) { // 查重闸：下一题若与前题考点重复/衍生（脱裤放屁），换一个独立考点
+            s.questions.set(next, dedupGuard(s, next, s.questions.get(next)));
+        }
 
         s.current = next;
         s.followUps = 0;
@@ -316,14 +356,57 @@ public class InterviewService {
                    → action="score"。仅罗列名词、未展开机制的不算覆盖，必须追问其展开。
                 3. 其余一律 action="followup"（这是"拷打"，追问是默认动作）：针对回答中最薄弱、含糊或未展开
                    之处追问一句，每次只追一个点。若上一轮追问未得到回答，换一个更小的切入点，严禁原样重问。
-                4. score/highlights/gaps 无论 action 取值都要给出，且基于对话全程评判：
-                   highlights 只能转述候选人真实说过的话；整体答非所问时 score 给 0 或 1 且 highlights 为空数组；
-                   追问轮答不上的部分在 gaps 中体现；吝啬给分，答对核心概念 5-6 分，补齐深度才往上加""");
+                4. score/highlights/gaps 无论 action 取值都要给出，且基于对话全程评判（综合打分原则）：
+                   分数衡量整条对话链的总体表现——候选人此前答对的要点、解释清楚的专业术语都计入得分，
+                   最后一轮说"不知道"或放弃不把前面的贡献清零，只是封顶了深度分。
+                   例：答对基本概念并解释清楚、后续追问中放弃 → 给 3-5 分而非 0-1 分。
+                   highlights 摘录候选人原话中的关键句（可截取），不要写概括性评语；整体答非所问时 score 给 0 或 1 且 highlights 为空数组；
+                   未能深入的追问在 gaps 中体现；吝啬给分，答对核心概念 5-6 分，补齐深度才往上加""");
         if (mustScore) {
-            sb.append("\n\n注意：本题追问次数已达上限或候选人已放弃，action 必须为 \"score\"。");
+            sb.append("\n\n注意：本题追问次数已达上限或候选人已放弃，action 必须为 \"score\"。"
+                    + "评分仍基于对话全程综合给出，不因最后放弃直接打 0 分。");
         }
 
         return new JudgeResult(parseObject(evalChatModel.chat(sb.toString())), hits);
+    }
+
+    /**
+     * 下一题查重闸：题目是开场一次性生成的，不知道前面几题的追问链实际刨过什么——
+     * 题 1 追问已经覆盖的考点，题 2 又原样来问，等于"脱裤放屁"。
+     * 推进前把「已考内容清单」交给模型，重复/衍生就换成主题下未覆盖的独立考点。
+     * 模型失灵或解析失败时保守返回原题，绝不阻断面试流程。
+     */
+    private String dedupGuard(InterviewSession s, int index, String nextQuestion) {
+        try {
+            String prompt = """
+                    你是资深 Java 面试官，正在安排「%s」主题面试的第 %d 道题。
+
+                    本场已经考过的内容（各题题干 + 实际追问过的问题）：
+                    %s
+
+                    原定的下一题是：「%s」
+
+                    判断：这题的考点是否与已考内容重复，或是已考内容的直接衍生
+                    （例如某题的追问链已经刨过某机制的细节，这题又来问该机制）？
+                    只输出严格 JSON（不要 markdown 代码块、不要多余文字）：
+                    {"changed": true 或 false, "question": "..."}
+                    - 不重复：changed=false，question 原样返回原题。
+                    - 重复或衍生：changed=true，question 给出「%s」主题下一个尚未考过的独立考点的新题，问法与其他题一致。"""
+                    .formatted(s.topic, index + 1, String.join("\n", s.coveredNotes), nextQuestion, s.topic);
+            Map<String, Object> d = parseObject(evalChatModel.chat(prompt));
+            boolean changed = Boolean.TRUE.equals(d.get("changed"));
+            String q = d.get("question") instanceof String x && !x.isBlank() ? x.trim() : nextQuestion;
+            if (changed && !q.equals(nextQuestion)) {
+                log.info("[面试留痕] session={} 题{} 查重命中，换题：原「{}」→ 新「{}」",
+                        s.sessionId, index + 1, nextQuestion, q);
+                return q;
+            }
+            log.info("[面试留痕] session={} 题{} 查重通过，保留原题：{}", s.sessionId, index + 1, nextQuestion);
+            return nextQuestion;
+        } catch (Exception e) {
+            log.warn("[面试留痕] session={} 题{} 查重调用失败，保留原题: {}", s.sessionId, index + 1, e.getMessage());
+            return nextQuestion;
+        }
     }
 
     /** 亮点可信度闸：只保留能逐字对应到考生原话的亮点（归一化去标点后做包含判断） */
