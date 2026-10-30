@@ -39,10 +39,13 @@ public class InterviewService {
     /** 整句放弃信号：服务端确定性兜底，命中即强制收尾评分（提示词之外不赌模型听话） */
     private static final java.util.regex.Pattern BAIL_OUT = java.util.regex.Pattern.compile(
             "^(不知道了?|不记得|不太记得了?|想不起来了?|不清楚了?|不了解|没了解过?|没听说过?|没研究过?|"
-                    + "不会|没有了?|没了|答不上来了?|直接打分吧?|放弃|这个我不会|这题不会|我放弃了?)$");
+                    + "不会|没有了?|没了|答不上来了?|答不上来了?直接打分吧?|直接打分吧?|放弃了?|我放弃了?|"
+                    + "这个我不会|这题不会)$");
 
     private static boolean isBailOut(String answer) {
-        String s = answer.replaceAll("[\\s!！。\\.?？~～…，,、；;：:的]", "");
+        // 剥标点/语气字 + 剥「这道题/这个/这题/我」开头，让前端按钮文案「这题我答不上来了，直接打分吧」也能命中
+        String s = answer.replaceAll("[\\s!！。\\.?？~～…，,、；;：:的]", "")
+                .replaceFirst("^(这道题|这个|这题|我)+", "");
         return !s.isEmpty() && s.length() <= 12 && BAIL_OUT.matcher(s).matches();
     }
 
@@ -231,27 +234,32 @@ public class InterviewService {
             decision.put("gaps", ev.getOrDefault("gaps", List.of()));
             decision.put("reference", ev.getOrDefault("reference", ""));
         }
-        // 硬闸 3（综合打分）：实测小模型会把最后的"不知道"锚定成 0 分、把此前答对的内容清零——
-        // 提示词叮嘱拦不住。放弃轮本身不进评分语料：剔除放弃轮，用此前各轮候选人作答重新评。
-        if (bail && s.chain.size() >= 3) {
+        // 硬闸 3（综合打分）：实测小模型会把最后的"不知道/答不上来"锚定成低分、把此前答对的内容清零——
+        // 提示词叮嘱拦不住。放弃轮本身不进评分语料：剔除所有放弃性作答（含「直接打分」按钮文案），
+        // 用其余各轮实质作答重新评。giveUp=true 但带实质内容的最后一轮照常计入，不丢分。
+        if ((bail || giveUp) && s.chain.size() >= 3) {
             List<String> prior = new ArrayList<>();
-            for (int i = 0; i < s.chain.size() - 1; i += 2) {
-                prior.add(s.chain.get(i));
-            }
-            Map<String, Object> ev = evaluate(question, String.join("\n", prior), s.topic);
-            int es = ev.get("score") instanceof Number n3 ? n3.intValue() : -1;
-            if (es >= 0) {
-                log.info("[面试留痕] session={} 题{} 放弃轮综合重评：judge={} → 综合={}",
-                        s.sessionId, s.current + 1, score, es);
-                score = es;
-                decision.put("highlights", ev.getOrDefault("highlights", List.of()));
-                List<Object> gaps2 = new ArrayList<>();
-                if (ev.get("gaps") instanceof List<?> gl) {
-                    gaps2.addAll(gl);
+            for (int i = 0; i < s.chain.size(); i += 2) {
+                if (!isBailOut(s.chain.get(i))) {
+                    prior.add(s.chain.get(i));
                 }
-                gaps2.add("追问「" + s.chain.get(s.chain.size() - 2) + "」未能作答");
-                decision.put("gaps", gaps2);
-                decision.put("reference", ev.getOrDefault("reference", ""));
+            }
+            if (!prior.isEmpty()) {
+                Map<String, Object> ev = evaluate(question, String.join("\n", prior), s.topic);
+                int es = ev.get("score") instanceof Number n3 ? n3.intValue() : -1;
+                if (es >= 0) {
+                    log.info("[面试留痕] session={} 题{} 放弃轮综合重评：judge={} → 综合={}",
+                            s.sessionId, s.current + 1, score, es);
+                    score = es;
+                    decision.put("highlights", ev.getOrDefault("highlights", List.of()));
+                    List<Object> gaps2 = new ArrayList<>();
+                    if (ev.get("gaps") instanceof List<?> gl) {
+                        gaps2.addAll(gl);
+                    }
+                    gaps2.add("追问「" + s.chain.get(s.chain.size() - 2) + "」未能作答");
+                    decision.put("gaps", gaps2);
+                    decision.put("reference", ev.getOrDefault("reference", ""));
+                }
             }
         }
         if (score <= 1) { // 硬闸：无效作答不允许带亮点
