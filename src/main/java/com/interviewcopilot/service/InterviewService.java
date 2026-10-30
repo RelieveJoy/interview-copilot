@@ -178,6 +178,9 @@ public class InterviewService {
 
         String raw = evalChatModel.chat(sb.toString());
         Map<String, Object> result = parseObject(raw);
+        if (result.get("score") instanceof Number fm) { // 无欠缺即满分（9+空欠缺 → 10）
+            result.put("score", fullMarks(fm.intValue(), result));
+        }
         // 硬闸：无效作答（≤1 分）不允许带任何亮点，防止模型把寒暄原话当亮点
         Object sc = result.get("score");
         if (sc instanceof Number n && n.intValue() <= 1) {
@@ -305,6 +308,7 @@ public class InterviewService {
             decision.put("reference", ev.getOrDefault("reference", ""));
         }
         decision.put("highlights", honestHighlights(decision.get("highlights"), candidateTexts(s.chain)));
+        score = fullMarks(score, decision); // 无欠缺即满分：9 分 + 空欠缺 → 10
         s.checkpointDecision = new HashMap<>(decision);
         s.checkpointChainSize = s.chain.size();
         s.checkpointGaps.clear();
@@ -346,6 +350,11 @@ public class InterviewService {
     /** 本题收尾：亮点闸门、记入台账、留档已考内容并查重、推进下一题（或收卷）。 */
     private Map<String, Object> finishQuestion(InterviewSession s, String question,
                                                Map<String, Object> decision, int score) {
+        int fm = fullMarks(score, decision); // 无欠缺即满分：9 分 + 空欠缺 → 10
+        if (fm != score) {
+            log.info("[面试留痕] session={} 题{} 无欠缺提满：{} → 10", s.sessionId, s.current + 1, score);
+            score = fm;
+        }
         if (score <= 1) { // 硬闸：无效作答不允许带亮点
             decision.put("highlights", List.of());
         }
@@ -405,6 +414,12 @@ public class InterviewService {
             said.add(chain.get(i));
         }
         return said;
+    }
+
+    /** 无欠缺即满分：模型给 9 分且找不出任何欠缺时，压分的唯一理由只剩吝啬——直接给 10。
+     *  仅 9 分档触发（模型对浅答犯懒返回空欠缺也不会被抬分）。 */
+    private static int fullMarks(int score, Map<String, Object> decision) {
+        return score == 9 && decision.get("gaps") instanceof List<?> gl && gl.isEmpty() ? 10 : score;
     }
 
     /** 单次 LLM 判定：继续追问还是收尾，顺带给出基于全链的评分字段。temperature=0 保证稳定。 */
