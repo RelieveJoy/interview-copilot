@@ -216,7 +216,7 @@
   .eval .head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
   .score-ring {
     width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-    font-size: 17px; font-weight: 700; flex-shrink: 0; font-family: var(--mono);
+    font-size: 17px; font-weight: 700; flex-shrink: 0; font-family: var(--mono); white-space: nowrap;
   }
   .eval .verdict { font-size: 13.5px; color: var(--muted); }
   .eval .verdict b { color: var(--text); font-size: 14.5px; display: block; }
@@ -760,7 +760,7 @@ async function startInterview() {
     stat.textContent = ''; ivRefresh();
     const s = botShell('🎤 面试官');
     const c = s.querySelector('.content');
-    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。每题面试官会刨根追问（最多 3 轮）；随时可点左侧「中途评分」看当前得分与欠缺，按欠缺继续补答就能涨分；答不上来点「直接打分」结束本题。</blockquote></div>`);
+    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。每题面试官会刨根追问到底、不设轮数上限，无欠缺才收卷；随时可点左侧「中途评分」看当前得分与欠缺，按欠缺继续补答就能涨分；答不上来点「直接打分」结束本题。</blockquote></div>`);
     msgs.push({ role: 'iv', html: c.querySelector('.body').outerHTML }); persist();
     showQuestion(); scrollBottom(true);
     ta.placeholder = '输入你的回答，回车提交';
@@ -797,10 +797,10 @@ async function submitAnswer(answer, giveUp = false) {
     status.remove();
     if (!r.ok) { shell.remove(); addErrorMsg(d.error || ('HTTP ' + r.status)); return; }
     if (d.type === 'followup') {
-      // 面试官继续刨根：本题不结束，等下一轮作答
+      // 面试官继续刨根：本题不结束，等下一轮作答（追问无上限，答不上随时「直接打分」）
       content.insertAdjacentHTML('beforeend',
-        `<div class="body"><div class="iv-q"><span class="no fu">追问 ${d.round}/${d.maxRounds}</span><div>${md(d.followUp)}</div></div></div>`);
-      msgs.push({ role: 'ivf', text: d.followUp, r: d.round, max: d.maxRounds }); persist();
+        `<div class="body"><div class="iv-q"><span class="no fu">追问 ${d.round}</span><div>${md(d.followUp)}</div></div></div>`);
+      msgs.push({ role: 'ivf', text: d.followUp, r: d.round }); persist();
       scrollBottom(true);
       return;
     }
@@ -887,12 +887,13 @@ async function submitAdvance() {
 
 function renderSummaryCard(scores, liveNote) {
   const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const avgTxt = Number.isInteger(avg) ? String(avg) : avg.toFixed(1); // 整数不带 .0，防 10.0/10 挤爆环形框换行
   const cAll = v => v >= 7 ? 'var(--green)' : v >= 4 ? 'var(--amber)' : 'var(--red)';
   const bg = avg >= 7 ? 'var(--green-soft)' : avg >= 4 ? 'var(--amber-soft)' : 'var(--red-soft)';
   const s = botShell('🎤 面试官');
   const c = s.querySelector('.content');
   c.insertAdjacentHTML('beforeend', `<div class="body"><div class="eval">` +
-    `<div class="head"><div class="score-ring" style="color:${cAll(avg)};background:${bg};border:2px solid ${cAll(avg)}">${avg.toFixed(1)}<span style="font-size:10px;font-weight:400">/10</span></div>` +
+    `<div class="head"><div class="score-ring" style="color:${cAll(avg)};background:${bg};border:2px solid ${cAll(avg)}">${avgTxt}<span style="font-size:10px;font-weight:400">/10</span></div>` +
     `<div class="verdict"><b>面试完成 · 共 ${scores.length} 题</b>平均分与逐题得分</div></div>` +
     scores.map((v, i) => `<div class="sumrow"><span>第 ${i + 1} 题</span><b style="color:${cAll(v)}">${v}/10</b></div>`).join('') +
     (liveNote ? `<div class="sumrow" style="color:var(--muted)"><span>🔔 复盘报告后台生成中，完成后右上角铃铛亮起，可预览 / 下载</span></div>` : '') +
@@ -1204,7 +1205,7 @@ function renderAll() {
     } else if (m.role === 'ivf') {
       const s = botShell('🎤 面试官');
       s.querySelector('.content').insertAdjacentHTML('beforeend',
-        `<div class="body"><div class="iv-q"><span class="no fu">追问 ${m.r}/${m.max}</span><div>${md(m.text)}</div></div></div>`);
+        `<div class="body"><div class="iv-q"><span class="no fu">追问 ${m.r}${m.max ? '/' + m.max : ''}</span><div>${md(m.text)}</div></div></div>`);
     } else if (m.role === 'ivsum') {
       renderSummaryCard(m.scores);
     }

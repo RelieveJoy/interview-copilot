@@ -37,8 +37,7 @@ public class InterviewService {
     /** sessionId → 面试会话 */
     private final Map<String, InterviewSession> sessions = new ConcurrentHashMap<>();
 
-    /** 每题最多追问轮数（防止无限拷打） */
-    private static final int MAX_FOLLOW_UPS = 3;
+    /** 追问轮数不设上限：拷打到底——出口 = 放弃信号 / 直接打分 / 重复追问闸 / 无欠缺收卷 */
 
     /** 复盘报告注册表：sessionId → 报告（收卷后异步生成，前端铃铛轮询取） */
     private final Map<String, ReportEntry> reports = new ConcurrentHashMap<>();
@@ -82,7 +81,7 @@ public class InterviewService {
     private static final java.util.regex.Pattern BAIL_OUT = java.util.regex.Pattern.compile(
             "^(不知道了?|不记得|不太记得了?|想不起来了?|不清楚了?|不了解|没了解过?|没听说过?|没研究过?|"
                     + "不会|没有了?|没了|答不上来了?|答不上来了?直接打分吧?|直接打分吧?|放弃了?|我放弃了?|"
-                    + "这个我不会|这题不会)$");
+                    + "这个我不会|这题不会|不能了?|没法|没办法|说不上来|讲不出来|答不上|不会答|不知道怎么答)$");
 
     private static boolean isBailOut(String answer) {
         // 剥标点/语气字 + 剥「这道题/这个/这题/我」开头，让前端按钮文案「这题我答不上来了，直接打分吧」也能命中
@@ -241,7 +240,7 @@ public class InterviewService {
      * 拷打循环的一轮，三种动作：常规作答（追问或终评）、checkpoint 中途评分（本题不结束）、
      * advance 接受得分进下一题。会话状态在服务端推进，前端只管收发。
      *
-     * 返回 {"type":"followup","followUp":...,"round":n,"maxRounds":3}，
+     * 返回 {"type":"followup","followUp":...,"round":n}（追问不设轮数上限，出口=放弃/判重/无欠缺），
      *      {"type":"checkpoint","score":n,"highlights":[...],"gaps":[...],"reference":...,"rounds":n}，或
      *      {"type":"score","score":n,"highlights":[...],"gaps":[...],"reference":...,
      *       "scores":[已完成各题得分], "nextIndex":n, "nextQuestion":"..."|"" , "done":bool}
@@ -262,7 +261,7 @@ public class InterviewService {
         s.chain.add(answer == null || answer.isBlank() ? "（放弃作答）" : answer.trim());
 
         boolean bail = isBailOut(s.chain.get(s.chain.size() - 1));
-        boolean mustScore = giveUp || bail || s.followUps >= MAX_FOLLOW_UPS;
+        boolean mustScore = giveUp || bail; // 追问不上限：出口只有放弃信号 / 有欠缺继续拷 / 判重闸
         JudgeResult d = judge(s, question, mustScore);
         if (bail) {
             log.info("[面试留痕] session={} 题{} 候选人放弃信号命中，跳过追问直接终评", s.sessionId, s.current + 1);
@@ -273,15 +272,34 @@ public class InterviewService {
                 decision.getOrDefault("action", "?"),
                 d.hits().stream().map(KnowledgeService.KnowledgeHit::file).distinct().toList());
 
-        boolean followup = !mustScore && "followup".equals(decision.get("action"))
-                && decision.get("followup") instanceof String fu && !fu.isBlank();
+        String fu = decision.get("followup") instanceof String x && !x.isBlank()
+                ? ((String) decision.get("followup")).trim() : null;
+        boolean followup = !mustScore && "followup".equals(decision.get("action")) && fu != null;
+        if (followup && isAskedBefore(s, fu)) {
+            // 硬闸：模型把问过的追问原样又问一遍（实测 glm-4-flash 无视提示词禁令）→ 没有新问题可问，强制终评
+            log.info("[面试留痕] session={} 题{} 追问与已问过的问题重复，强制终评：{}", s.sessionId, s.current + 1, fu);
+            followup = false;
+        }
+        if (!followup && !mustScore) {
+            // 硬闸：有欠缺不收卷——判定模型"充分覆盖"偏宽松（一句话作答也能 9 分直接终评），
+            // 只要仍有欠缺且候选人没放弃，就针对欠缺继续拷问（拷打是默认动作，无欠缺才收卷）。
+            // 注意解析兜底（score=-1，gaps 是"解析失败"哨兵文案）不算真欠缺，走下方补评路径。
+            boolean parseFailed = decision.get("score") instanceof Number pn && pn.intValue() < 0;
+            List<?> gaps = decision.get("gaps") instanceof List<?> gl ? gl : List.of();
+            if (!parseFailed && !gaps.isEmpty()) {
+                if (fu == null) {
+                    String g = String.valueOf(gaps.get(0));
+                    fu = "你的回答里「" + (g.length() > 60 ? g.substring(0, 60) + "…" : g) + "」还没讲透，展开讲讲这部分";
+                }
+                followup = true;
+                log.info("[面试留痕] session={} 题{} 终评判定仍有欠缺，服务端强制追问：{}", s.sessionId, s.current + 1, fu);
+            }
+        }
         if (followup) {
-            String fu = ((String) decision.get("followup")).trim();
             s.chain.add(fu);
             s.followUps++;
-            log.info("[面试留痕] session={} 题{} 追问第{}/{}轮：{}", s.sessionId, s.current + 1, s.followUps, MAX_FOLLOW_UPS, fu);
-            return Map.of("type", "followup", "followUp", fu,
-                    "round", s.followUps, "maxRounds", MAX_FOLLOW_UPS);
+            log.info("[面试留痕] session={} 题{} 追问第{}轮：{}", s.sessionId, s.current + 1, s.followUps, fu);
+            return Map.of("type", "followup", "followUp", fu, "round", s.followUps);
         }
 
         // ---- 收尾打分 ----
@@ -386,7 +404,14 @@ public class InterviewService {
         } else {
             decision = judge(s, question, true).decision();
         }
-        int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : 0;
+        int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
+        if (score < 0) { // 模型没给分/解析失败 → 用整条链补评（与 turn() 收尾路径同款兜底，不冤枉记 0 分）
+            Map<String, Object> ev = evaluate(question, transcript(s.chain), s.topic);
+            score = ev.get("score") instanceof Number n2 ? n2.intValue() : 0;
+            decision.put("highlights", ev.getOrDefault("highlights", List.of()));
+            decision.put("gaps", ev.getOrDefault("gaps", List.of()));
+            decision.put("reference", ev.getOrDefault("reference", ""));
+        }
         return finishQuestion(s, question, decision, score);
     }
 
@@ -465,6 +490,46 @@ public class InterviewService {
         out.put("nextQuestion", done ? "" : s.questions.get(next));
         out.put("done", done);
         return out;
+    }
+
+    /** 追问是否已经问过：与原题或此前任何一条追问重复即真（提示词禁不住小模型原样重问，服务端判重硬闸） */
+    private static boolean isAskedBefore(InterviewSession s, String fu) {
+        if (isSameQuestion(fu, s.questions.get(s.current))) {
+            return true;
+        }
+        for (int i = 1; i < s.chain.size(); i += 2) {
+            if (isSameQuestion(fu, s.chain.get(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 两问是否同题：归一化后完全相同 / 互为包含（短边≥8字）/ 字符二元组 Jaccard ≥ 0.75（换措辞重问） */
+    private static boolean isSameQuestion(String a, String b) {
+        String na = a.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
+        String nb = b.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
+        if (na.isEmpty() || nb.isEmpty() || na.equals(nb)) {
+            return !na.isEmpty() && na.equals(nb);
+        }
+        String sh = na.length() <= nb.length() ? na : nb, ln = na.length() <= nb.length() ? nb : na;
+        if (sh.length() >= 8 && ln.contains(sh)) {
+            return true;
+        }
+        java.util.Set<String> bigA = bigrams(na), bigB = bigrams(nb);
+        java.util.Set<String> inter = new java.util.HashSet<>(bigA);
+        inter.retainAll(bigB);
+        java.util.Set<String> union = new java.util.HashSet<>(bigA);
+        union.addAll(bigB);
+        return !union.isEmpty() && (double) inter.size() / union.size() >= 0.75;
+    }
+
+    private static java.util.Set<String> bigrams(String s) {
+        java.util.Set<String> set = new java.util.HashSet<>();
+        for (int i = 0; i < s.length() - 1; i++) {
+            set.add(s.substring(i, i + 2));
+        }
+        return set;
     }
 
     /** 对话链里的候选人各轮作答（偶数下标） */
@@ -546,7 +611,7 @@ public class InterviewService {
                    若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
                    满分应当罕见但可达，不许为了凑欠缺而编造欠缺""");
         if (mustScore) {
-            sb.append("\n\n注意：本题追问次数已达上限或候选人已放弃，action 必须为 \"score\"。"
+            sb.append("\n\n注意：候选人已放弃本题，action 必须为 \"score\"。"
                     + "评分仍基于对话全程综合给出，不因最后放弃直接打 0 分。");
         }
 
