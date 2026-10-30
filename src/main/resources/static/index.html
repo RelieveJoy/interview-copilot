@@ -269,6 +269,58 @@
   #scroller::-webkit-scrollbar, aside::-webkit-scrollbar { width: 8px; }
   #scroller::-webkit-scrollbar-thumb, aside::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
+  /* ---------- 复盘报告：铃铛 + 下拉 + 预览弹层 ---------- */
+  .bell-wrap { position: relative; }
+  .bell-dot {
+    position: absolute; top: -4px; right: -4px; width: 9px; height: 9px;
+    border-radius: 50%; display: none; border: 2px solid var(--panel);
+  }
+  .bell-dot.gen { display: block; background: var(--amber); animation: blink 1.2s infinite; }
+  .bell-dot.new { display: block; background: var(--green); }
+  .report-drop {
+    display: none; position: absolute; top: 54px; right: 12px; width: 308px; z-index: 55;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.45); padding: 6px; max-height: 60vh; overflow-y: auto;
+  }
+  .report-drop.open { display: block; }
+  .report-item {
+    display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px;
+    cursor: pointer; font-size: 13px;
+  }
+  .report-item:hover { background: var(--bg); }
+  .report-item .t { flex: 1; min-width: 0; }
+  .report-item .t b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .report-item .t span { font-size: 11.5px; color: var(--faint); }
+  .report-item .sc { font-family: var(--mono); font-size: 13.5px; font-weight: 700; flex-shrink: 0; }
+  .report-item .sc.g { color: var(--green); } .report-item .sc.a { color: var(--amber); } .report-item .sc.r { color: var(--red); }
+  .report-item .undot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .report-item .retry {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; font-size: 11.5px; padding: 3px 9px; flex-shrink: 0;
+  }
+  .report-item .retry:hover { color: var(--text); border-color: var(--faint); }
+  .report-empty { padding: 16px 12px; text-align: center; color: var(--faint); font-size: 12.5px; line-height: 1.8; }
+  .report-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 70;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .report-panel {
+    width: min(760px, 100%); max-height: 86vh; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  .report-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .report-head b { font-size: 14.5px; }
+  .rm-meta { display: block; font-size: 12px; color: var(--faint); font-weight: 400; margin-top: 2px; }
+  .report-body { padding: 8px 20px 18px; overflow-y: auto; }
+  .report-body::-webkit-scrollbar { width: 8px; }
+  .report-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .report-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--border); }
+  .report-foot .btn { width: auto; margin: 0; padding: 7px 16px; }
+
   /* ---------- 移动端 ---------- */
   #backdrop { display: none; position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 40; }
   @media (max-width: 960px) {
@@ -293,6 +345,10 @@
   <span class="badge" id="modelBadge">…</span>
   <span class="badge ok hide-sm" id="kbBadge">知识库 0 篇</span>
   <span class="spacer"></span>
+  <div class="bell-wrap" id="bellWrap" style="display:none">
+    <button class="iconbtn" onclick="toggleReports(event)" title="面试复盘报告">🔔</button>
+    <span class="bell-dot" id="bellDot"></span>
+  </div>
   <button class="iconbtn" onclick="newChat()" title="清空当前会话并开启新对话">🔄 新对话</button>
 </header>
 
@@ -339,6 +395,22 @@
 </div>
 
 <div id="toast"></div>
+
+<div id="reportDrop" class="report-drop"></div>
+
+<div id="reportModal" class="report-modal" style="display:none">
+  <div class="report-panel">
+    <div class="report-head">
+      <div><b id="rmTitle">复盘报告</b><span class="rm-meta" id="rmMeta"></span></div>
+      <button class="iconbtn" onclick="closeReport()">✕ 关闭</button>
+    </div>
+    <div class="report-body" id="rmBody"></div>
+    <div class="report-foot">
+      <button class="btn ghost" onclick="copyReport()">📋 复制全文</button>
+      <button class="btn" onclick="downloadReport()">⬇ 下载 .md</button>
+    </div>
+  </div>
+</div>
 
 <script>
 'use strict';
@@ -744,8 +816,10 @@ function handleScore(content, d) {
   renderEval(content, d);
   msgs.push({ role: 'eval', d: { score: d.score, highlights: d.highlights, gaps: d.gaps, reference: d.reference, rounds: d.rounds } }); persist();
   if (d.done) {
+    const sid = interview.sessionId, topic = interview.topic; // endInterview 会清空，先取
     renderSummary(d.scores);
     endInterview(true);
+    if (sid) startReportPoll(sid, topic); // 复盘报告后台生成，完成后右上角 🔔 亮起
     return;
   }
   if (d.nextQuestion) interview.questions[d.nextIndex] = d.nextQuestion; // 服务端查重可能换题，同步本地题目
@@ -811,7 +885,7 @@ async function submitAdvance() {
   ta.focus();
 }
 
-function renderSummaryCard(scores) {
+function renderSummaryCard(scores, liveNote) {
   const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
   const cAll = v => v >= 7 ? 'var(--green)' : v >= 4 ? 'var(--amber)' : 'var(--red)';
   const bg = avg >= 7 ? 'var(--green-soft)' : avg >= 4 ? 'var(--amber-soft)' : 'var(--red-soft)';
@@ -821,12 +895,13 @@ function renderSummaryCard(scores) {
     `<div class="head"><div class="score-ring" style="color:${cAll(avg)};background:${bg};border:2px solid ${cAll(avg)}">${avg.toFixed(1)}<span style="font-size:10px;font-weight:400">/10</span></div>` +
     `<div class="verdict"><b>面试完成 · 共 ${scores.length} 题</b>平均分与逐题得分</div></div>` +
     scores.map((v, i) => `<div class="sumrow"><span>第 ${i + 1} 题</span><b style="color:${cAll(v)}">${v}/10</b></div>`).join('') +
+    (liveNote ? `<div class="sumrow" style="color:var(--muted)"><span>🔔 复盘报告后台生成中，完成后右上角铃铛亮起，可预览 / 下载</span></div>` : '') +
     `</div></div>`);
   scrollBottom(true);
 }
 
 function renderSummary(scores) {
-  renderSummaryCard(scores);
+  renderSummaryCard(scores, true);
   msgs.push({ role: 'ivsum', scores }); persist();
 }
 
@@ -940,6 +1015,137 @@ function newChat() {
   toast('已开启新对话');
 }
 
+/* ================= 复盘报告（铃铛）：异步生成 → 轮询 → 预览/下载 ================= */
+const LS_REPORTS = 'ic.reports.v1', LS_PENDING = 'ic.reportPending.v1';
+let reports = []; try { reports = JSON.parse(localStorage.getItem(LS_REPORTS) || '[]'); } catch (e) { reports = []; }
+let reportPending = null; try { reportPending = JSON.parse(localStorage.getItem(LS_PENDING) || 'null'); } catch (e) { reportPending = null; }
+let pollTimer = null, pollTries = 0, curReport = null;
+
+function persistReports() { localStorage.setItem(LS_REPORTS, JSON.stringify(reports.slice(-20))); }
+function bellState() {
+  const w = document.getElementById('bellWrap'), d = document.getElementById('bellDot');
+  w.style.display = (reports.length || reportPending) ? '' : 'none';
+  d.className = 'bell-dot' + (reportPending ? ' gen' : reports.some(r => r.unread) ? ' new' : '');
+}
+function fmtDate() { return new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-'); }
+
+function startReportPoll(sid, topic) {
+  reportPending = { sid, topic }; pollTries = 0;
+  localStorage.setItem(LS_PENDING, JSON.stringify(reportPending));
+  bellState(); startPolling();
+  toast('复盘报告后台生成中，完成后右上角 🔔 会亮');
+}
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    if (!reportPending) { clearInterval(pollTimer); pollTimer = null; bellState(); return; }
+    if (++pollTries > 60) { // ~3 分钟兜底
+      saveFailed(reportPending.sid, reportPending.topic);
+      clearPending(); bellState(); toast('复盘报告超时未生成');
+      return;
+    }
+    try {
+      const d = await (await fetch('/api/interview/report?sessionId=' + encodeURIComponent(reportPending.sid))).json();
+      if (d.status === 'ready') {
+        reports = reports.filter(r => r.id !== reportPending.sid);
+        reports.push({ id: reportPending.sid, topic: d.topic, date: d.date, scores: d.scores || [], markdown: d.markdown, unread: true });
+        persistReports(); clearPending(); bellState();
+        toast('🔔 复盘报告已生成，点右上角铃铛查看');
+      } else if (d.status === 'failed') {
+        saveFailed(reportPending.sid, reportPending.topic);
+        clearPending(); bellState(); toast('复盘报告生成失败，可在铃铛里重试');
+      } // generating / none → 继续等（none 多为服务重启，给足重试窗口）
+    } catch (e) { /* 网络抖动，下一轮再试 */ }
+  }, 3000);
+}
+function saveFailed(sid, topic) {
+  reports = reports.filter(r => r.id !== sid);
+  reports.push({ id: sid, topic, date: fmtDate(), scores: [], failed: true });
+  persistReports();
+}
+function clearPending() {
+  reportPending = null; localStorage.removeItem(LS_PENDING);
+  clearInterval(pollTimer); pollTimer = null;
+}
+
+function toggleReports(ev) {
+  if (ev) ev.stopPropagation();
+  const drop = document.getElementById('reportDrop');
+  if (drop.classList.contains('open')) { drop.classList.remove('open'); return; }
+  renderReportList();
+  drop.classList.add('open');
+}
+function renderReportList() {
+  const drop = document.getElementById('reportDrop');
+  if (!reports.length && !reportPending) {
+    drop.innerHTML = '<div class="report-empty">暂无复盘报告<br>完成一场面试后自动生成</div>';
+    return;
+  }
+  drop.innerHTML = '';
+  for (const r of [...reports].reverse()) {
+    const item = document.createElement('div');
+    item.className = 'report-item';
+    if (r.failed) {
+      item.innerHTML = `<div class="t"><b>《${esc(r.topic)}》复盘生成失败</b><span>${esc(r.date || '')}</span></div><button class="retry">↻ 重试</button>`;
+      item.querySelector('.retry').onclick = e => { e.stopPropagation(); retryReport(r); };
+    } else {
+      const avg = r.scores && r.scores.length ? r.scores.reduce((a, b) => a + b, 0) / r.scores.length : 0;
+      item.innerHTML = `${r.unread ? '<span class="undot"></span>' : ''}` +
+        `<div class="t"><b>《${esc(r.topic)}》复盘报告</b><span>${esc(r.date || '')} · ${(r.scores || []).length} 题</span></div>` +
+        `<span class="sc ${avg >= 7 ? 'g' : avg >= 4 ? 'a' : 'r'}">${avg.toFixed(1)}</span>`;
+      item.onclick = () => openReport(r);
+    }
+    drop.appendChild(item);
+  }
+  if (reportPending) {
+    const p = document.createElement('div');
+    p.className = 'report-empty';
+    p.innerHTML = `🔔 《${esc(reportPending.topic)}》复盘报告生成中…`;
+    drop.prepend(p);
+  }
+}
+function retryReport(r) {
+  fetch('/api/interview/report', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: r.id })
+  }).then(res => res.json()).then(d => {
+    if (!d || d.status === 'none') { toast('报告快照已丢失（服务重启过），重新打一场吧'); return; }
+    reports = reports.filter(x => x.id !== r.id); persistReports();
+    reportPending = { sid: r.id, topic: r.topic }; pollTries = 0;
+    localStorage.setItem(LS_PENDING, JSON.stringify(reportPending));
+    bellState(); startPolling(); renderReportList();
+    toast('重新生成中…');
+  }).catch(() => toast('网络错误，稍后再试'));
+}
+function openReport(r) {
+  reports.forEach(x => { if (x === r) x.unread = false; });
+  persistReports(); bellState();
+  document.getElementById('reportDrop').classList.remove('open');
+  curReport = r;
+  const avg = (r.scores || []).length ? (r.scores.reduce((a, b) => a + b, 0) / r.scores.length).toFixed(1) : '-';
+  document.getElementById('rmTitle').textContent = `《${r.topic}》复盘报告`;
+  document.getElementById('rmMeta').textContent = `${r.date || ''} · 共 ${(r.scores || []).length} 题 · 平均 ${avg} 分`;
+  document.getElementById('rmBody').innerHTML = md(r.markdown || '');
+  document.getElementById('reportModal').style.display = 'flex';
+}
+function closeReport() { document.getElementById('reportModal').style.display = 'none'; }
+function copyReport() { copyText(curReport.markdown || '').then(() => toast('复盘报告已复制到剪贴板')); }
+function downloadReport() {
+  const name = `面试复盘-${curReport.topic}-${(curReport.date || '').replace(/[-: ]/g, '')}.md`;
+  const blob = new Blob([curReport.markdown || ''], { type: 'text/markdown;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  toast('已下载 ' + name);
+}
+document.getElementById('reportModal').addEventListener('click', e => { if (e.target.id === 'reportModal') closeReport(); });
+document.addEventListener('click', e => {
+  const drop = document.getElementById('reportDrop');
+  if (drop.classList.contains('open') && !e.target.closest('#reportDrop') && !e.target.closest('.bell-wrap')) {
+    drop.classList.remove('open');
+  }
+});
+
 /* ================= 启动：恢复历史 / 空状态 ================= */
 const SUGGESTS = [
   'HashMap 的扩容机制是怎样的？',
@@ -1010,6 +1216,8 @@ refreshStatus();
 loadTopics();
 renderAll();
 autosize();
+bellState();
+if (reportPending) startPolling(); // 刷新页面后继续等未完成的复盘报告
 </script>
 </body>
 </html>

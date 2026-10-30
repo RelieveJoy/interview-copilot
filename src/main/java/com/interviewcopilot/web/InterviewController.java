@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
@@ -21,6 +22,8 @@ import java.util.Map;
  *  - POST /api/interview/start           开始面试，生成题目
  *  - POST /api/interview/turn            拷打循环：一轮作答 → 追问 或 打分进下一题
  *  - POST /api/interview/answer          单轮评分（无状态诊断用，前端拷打走 /turn）
+ *  - GET  /api/interview/report          复盘报告状态/产物（收卷后异步生成，前端轮询）
+ *  - POST /api/interview/report          复盘报告失败重试/重新生成
  */
 @RestController
 @RequestMapping("/api/interview")
@@ -102,6 +105,32 @@ public class InterviewController {
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(Map.of("error", "调用大模型失败：" + e.getMessage()));
         }
+    }
+
+    /**
+     * 复盘报告：收卷后服务端异步生成，前端轮询本接口取状态与产物。
+     * status = generating | ready | failed | none（服务重启后快照丢失）。
+     */
+    @GetMapping("/report")
+    public ResponseEntity<?> report(@RequestParam String sessionId) {
+        InterviewService.ReportEntry e = interviewService.report(sessionId);
+        if (e == null) {
+            return ResponseEntity.ok(Map.of("status", "none"));
+        }
+        return ResponseEntity.ok(interviewService.reportView(e));
+    }
+
+    /** 失败重试 / 重新生成复盘报告（输入快照仍在服务端注册表时可用）。 */
+    @PostMapping("/report")
+    public ResponseEntity<?> regenerateReport(@RequestBody(required = false) InterviewTurnRequest request) {
+        if (request == null || request.sessionId() == null || request.sessionId().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "sessionId 不能为空"));
+        }
+        InterviewService.ReportEntry e = interviewService.regenerateReport(request.sessionId());
+        if (e == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "报告不存在（服务可能已重启），重新打一场面试吧"));
+        }
+        return ResponseEntity.ok(interviewService.reportView(e));
     }
 
     private ResponseEntity<Map<String, String>> keyMissing() {

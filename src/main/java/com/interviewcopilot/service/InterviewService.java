@@ -7,12 +7,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 面试模式：LLM 出题 → 候选人作答 → 基于 RAG 知识库的评分 + 追问。
@@ -35,6 +39,44 @@ public class InterviewService {
 
     /** 每题最多追问轮数（防止无限拷打） */
     private static final int MAX_FOLLOW_UPS = 3;
+
+    /** 复盘报告注册表：sessionId → 报告（收卷后异步生成，前端铃铛轮询取） */
+    private final Map<String, ReportEntry> reports = new ConcurrentHashMap<>();
+
+    /** 复盘报告后台生成：一次 LLM 调用实测 10~40s，不能阻塞收卷响应 */
+    private final ExecutorService reportExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "iv-report");
+        t.setDaemon(true);
+        return t;
+    });
+
+    /** 一份复盘报告：输入快照（失败可重试）+ 生成状态与产物 */
+    public static final class ReportEntry {
+        final String sessionId;
+        final String topic;
+        final String date;
+        final List<Integer> scores;
+        final List<Map<String, Object>> questionLog;
+        final List<String> files;              // 本场真实检索命中的笔记（「建议复习」白名单）
+        volatile String status = "generating"; // generating | ready | failed
+        volatile String markdown = "";
+        volatile String error = "";
+
+        ReportEntry(String sessionId, String topic, String date,
+                    List<Integer> scores, List<Map<String, Object>> questionLog, List<String> files) {
+            this.sessionId = sessionId;
+            this.topic = topic;
+            this.date = date;
+            this.scores = scores;
+            this.questionLog = questionLog;
+            this.files = files;
+        }
+
+        public String getSessionId() { return sessionId; }
+        public String getStatus() { return status; }
+        public String getMarkdown() { return markdown; }
+        public String getError() { return error; }
+    }
 
     /** 整句放弃信号：服务端确定性兜底，命中即强制收尾评分（提示词之外不赌模型听话） */
     private static final java.util.regex.Pattern BAIL_OUT = java.util.regex.Pattern.compile(
@@ -62,6 +104,7 @@ public class InterviewService {
         private Map<String, Object> checkpointDecision;               // 最近一次中途评分结果（本题未推进）
         private int checkpointChainSize = -1;                         // 中途评分时的作答轮数：一致则「下一题」原样采用
         private final List<String> checkpointGaps = new ArrayList<>(); // 中途评分的欠缺 → 后续追问锚点
+        private final List<Map<String, Object>> questionLog = new ArrayList<>(); // 逐题留档（题干/得分/亮点/欠缺/追问/涉及笔记），收卷后供复盘报告用
 
         InterviewSession(String sessionId, String topic, List<String> questions) {
             this.sessionId = sessionId;
@@ -380,6 +423,22 @@ public class InterviewService {
             covered.append("）");
         }
         s.coveredNotes.add(covered.toString());
+
+        // 逐题留档（复盘报告的输入）：题干/得分/亮点/欠缺/追问过的问题/本题涉及的笔记
+        List<String> asked = new ArrayList<>();
+        for (int i = 1; i < s.chain.size(); i += 2) {
+            asked.add(s.chain.get(i));
+        }
+        Map<String, Object> qlog = new HashMap<>();
+        qlog.put("question", question);
+        qlog.put("score", score);
+        qlog.put("highlights", decision.getOrDefault("highlights", List.of()));
+        qlog.put("gaps", decision.getOrDefault("gaps", List.of()));
+        qlog.put("followUps", asked);
+        qlog.put("rounds", rounds);
+        qlog.put("files", filesFor(question, s.topic));
+        s.questionLog.add(qlog);
+
         if (!done) { // 查重闸：下一题若与前题考点重复/衍生（脱裤放屁），换一个独立考点
             s.questions.set(next, dedupGuard(s, next, s.questions.get(next)));
         }
@@ -391,6 +450,7 @@ public class InterviewService {
         s.checkpointChainSize = -1;
         s.checkpointGaps.clear();
         if (done) {
+            submitReport(s); // 收卷即后台生成复盘报告（异步，不阻塞本次响应）
             sessions.remove(s.sessionId);
         }
         Map<String, Object> out = new HashMap<>();
@@ -530,6 +590,196 @@ public class InterviewService {
             log.warn("[面试留痕] session={} 题{} 查重调用失败，保留原题: {}", s.sessionId, index + 1, e.getMessage());
             return nextQuestion;
         }
+    }
+
+    // ---------- 复盘报告（收卷后异步生成，前端铃铛轮询取） ----------
+
+    /** 收卷即把输入快照放入报告注册表并提交后台生成；LLM 分析 + 服务端白名单闸 + 确定性渲染。 */
+    private void submitReport(InterviewSession s) {
+        List<String> files = s.questionLog.stream()
+                .flatMap(q -> ((List<?>) q.getOrDefault("files", List.of())).stream().map(String::valueOf))
+                .distinct().toList();
+        ReportEntry entry = new ReportEntry(s.sessionId, s.topic,
+                LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
+                List.copyOf(s.scores), List.copyOf(s.questionLog), files);
+        reports.put(s.sessionId, entry);
+        reportExecutor.submit(() -> generateReport(entry));
+        log.info("[面试复盘] session={} 收卷，复盘报告后台生成中（{} 题，涉及笔记 {} 篇）",
+                s.sessionId, entry.questionLog.size(), entry.files.size());
+    }
+
+    /** 报告生成的主体：逐题记录 + 笔记白名单 → LLM 严格 JSON 分析 → 服务端渲染 Markdown。 */
+    private void generateReport(ReportEntry e) {
+        long t0 = System.currentTimeMillis();
+        try {
+            StringBuilder qs = new StringBuilder();
+            for (int i = 0; i < e.questionLog.size(); i++) {
+                Map<String, Object> q = e.questionLog.get(i);
+                qs.append("\n第").append(i + 1).append("题「").append(q.get("question")).append("」 得分 ")
+                  .append(q.get("score")).append("/10");
+                if (q.get("highlights") instanceof List<?> hl && !hl.isEmpty()) {
+                    qs.append("\n  亮点：").append(String.join("；", hl.stream().map(String::valueOf).toList()));
+                }
+                if (q.get("gaps") instanceof List<?> gl && !gl.isEmpty()) {
+                    qs.append("\n  欠缺：").append(String.join("；", gl.stream().map(String::valueOf).toList()));
+                }
+                if (q.get("followUps") instanceof List<?> fl && !fl.isEmpty()) {
+                    qs.append("\n  追问过：").append(String.join("；", fl.stream().map(String::valueOf).toList()));
+                }
+            }
+            String prompt = """
+                    你是资深 Java 面试官，刚结束一场《%s》主题的模拟面试，请基于逐题记录做复盘分析。
+
+                    日期：%s
+                    逐题记录：
+                    %s
+
+                    本场实际涉及的知识库笔记文件（「建议复习」只能从这份清单里挑，文件名一个字不能改）：
+                    %s
+
+                    只输出严格 JSON（不要 markdown 代码块、不要多余文字），结构：
+                    {"overall": "总体评价150字内：整体表现、得分结构、最突出的强项与短板",
+                     "weakAreas": [{"area": "薄弱领域", "detail": "具体欠缺什么", "advice": "怎么补，30字内"}],
+                     "reviewFiles": ["清单里最该复习的2-4个文件，按优先级"],
+                     "next": "下一步行动，60字内"}
+
+                    要求：weakAreas 按知识领域归并同类欠缺（不按题号罗列），2-5 组；
+                    欠缺为空的题说明掌握扎实，不要硬找毛病；整体低分时如实指出基础薄弱。"""
+                    .formatted(e.topic, e.date, qs, e.files.isEmpty() ? "（本场未命中笔记）" : String.join("\n", e.files));
+
+            Map<String, Object> d = parseObject(evalChatModel.chat(prompt));
+            List<String> review = filterReviewFiles(d.get("reviewFiles"), e.files);
+            if (review.isEmpty() && !e.files.isEmpty()) {
+                review = e.files.stream().limit(4).toList(); // 模型清单没过白名单 → 回退为本场实际涉及笔记（仍是真实文件）
+                log.info("[面试复盘] session={} 模型复习清单未过白名单，回退为实际涉及笔记 {}", e.sessionId, review);
+            }
+            e.markdown = renderReport(e, d, review);
+            e.status = "ready";
+            log.info("[面试复盘] session={} 报告生成完成（{} ms，复习清单 {} 篇）",
+                    e.sessionId, System.currentTimeMillis() - t0, review.size());
+        } catch (Exception ex) {
+            e.status = "failed";
+            e.error = "复盘报告生成失败：" + ex.getMessage();
+            log.warn("[面试复盘] session={} 生成失败: {}", e.sessionId, ex.getMessage());
+        }
+    }
+
+    /** 白名单闸：LLM 挑的「建议复习」文件必须对应本场真实检索命中的笔记（防编造文件名），映射回真实文件名返回。 */
+    private static List<String> filterReviewFiles(Object picked, List<String> realFiles) {
+        List<String> out = new ArrayList<>();
+        if (picked instanceof List<?> list) {
+            for (Object x : list) {
+                String fn = String.valueOf(x).replace(".md", "").trim();
+                if (fn.isEmpty()) {
+                    continue;
+                }
+                for (String r : realFiles) {
+                    String rn = r.replace(".md", "").trim();
+                    if (rn.equalsIgnoreCase(fn) || (fn.length() >= 4 && (rn.contains(fn) || fn.contains(rn)))) {
+                        if (!out.contains(r)) {
+                            out.add(r); // 展示真实文件名，LLM 写什么变体都归一到检索事实
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 报告 Markdown 由服务端确定性渲染（LLM 只出结构化 JSON，版式/清单不交給模型自由发挥）。 */
+    private static String renderReport(ReportEntry e, Map<String, Object> d, List<String> reviewFiles) {
+        double avg = e.scores.stream().mapToInt(Integer::intValue).average().orElse(0);
+        StringBuilder md = new StringBuilder();
+        md.append("# 面试复盘 · 《").append(e.topic).append("》\n\n");
+        md.append("> ").append(e.date).append(" · 共 ").append(e.scores.size()).append(" 题 · 平均 ")
+          .append(String.format("%.1f", avg)).append(" / 10\n\n");
+        md.append("## 逐题得分\n\n| # | 题目 | 得分 |\n|---|---|---|\n");
+        for (int i = 0; i < e.questionLog.size(); i++) {
+            Map<String, Object> q = e.questionLog.get(i);
+            md.append("| ").append(i + 1).append(" | ")
+              .append(String.valueOf(q.get("question")).replace("|", "／")).append(" | ")
+              .append(q.get("score")).append("/10 |\n");
+        }
+        md.append("\n## 总体评价\n\n").append(str(d.get("overall"))).append("\n");
+        md.append("\n## 薄弱项归类\n\n");
+        if (d.get("weakAreas") instanceof List<?> was && !was.isEmpty()) {
+            for (Object w0 : was) {
+                if (w0 instanceof Map<?, ?> w) {
+                    md.append("- **").append(str(w.get("area"))).append("** — ")
+                      .append(str(w.get("detail"))).append("\n  - 补法：").append(str(w.get("advice"))).append("\n");
+                }
+            }
+        } else {
+            md.append("（本场未发现明显薄弱项，保持手感）\n");
+        }
+        md.append("\n## 建议复习笔记\n\n");
+        if (reviewFiles.isEmpty()) {
+            md.append("（本场未检索到相关笔记）\n");
+        } else {
+            for (String f : reviewFiles) {
+                md.append("- `").append(f).append("`\n");
+            }
+        }
+        md.append("\n## 下一步\n\n").append(str(d.get("next"))).append("\n");
+        return md.toString();
+    }
+
+    private static String str(Object o) {
+        return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    /** 本题涉及的知识库笔记：与评分同款的主题限定检索，零 token、结果即白名单事实。 */
+    private List<String> filesFor(String question, String topic) {
+        List<KnowledgeService.KnowledgeHit> hits;
+        if (topic != null && !topic.isBlank()) {
+            hits = knowledgeService.searchInFiles(question, topic.trim() + "-", 4);
+        } else {
+            hits = List.of();
+        }
+        if (hits.isEmpty()) {
+            hits = knowledgeService.search(question, 4);
+        }
+        List<String> files = new ArrayList<>();
+        for (KnowledgeService.KnowledgeHit h : hits) {
+            if (!files.contains(h.file())) {
+                files.add(h.file());
+            }
+        }
+        return files;
+    }
+
+    public ReportEntry report(String sessionId) {
+        return sessionId == null ? null : reports.get(sessionId.trim());
+    }
+
+    /** 失败重试 / 重新生成：输入快照还在注册表里，直接再跑一次。 */
+    public ReportEntry regenerateReport(String sessionId) {
+        ReportEntry e = report(sessionId);
+        if (e == null || "generating".equals(e.status)) {
+            return e;
+        }
+        e.status = "generating";
+        e.error = "";
+        reportExecutor.submit(() -> generateReport(e));
+        log.info("[面试复盘] session={} 重新生成", e.sessionId);
+        return e;
+    }
+
+    /** 报告对外视图（GET/POST /api/interview/report 的响应体）。 */
+    public Map<String, Object> reportView(ReportEntry e) {
+        Map<String, Object> out = new HashMap<>();
+        out.put("sessionId", e.sessionId);
+        out.put("status", e.status);
+        out.put("topic", e.topic);
+        out.put("date", e.date);
+        out.put("scores", e.scores);
+        out.put("avg", e.scores.isEmpty() ? 0
+                : Math.round(e.scores.stream().mapToInt(Integer::intValue).average().orElse(0) * 10) / 10.0);
+        out.put("files", e.files);
+        out.put("markdown", e.markdown);
+        out.put("error", e.error);
+        return out;
     }
 
     /** 亮点可信度闸：只保留能逐字对应到考生原话的亮点（归一化去标点后做包含判断） */
