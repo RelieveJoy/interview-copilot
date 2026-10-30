@@ -59,6 +59,9 @@ public class InterviewService {
         private final List<String> chain = new ArrayList<>();   // 本题对话链：回答,追问,回答,追问…
         private final List<Integer> scores = new ArrayList<>(); // 已完成题的得分
         private final List<String> coveredNotes = new ArrayList<>(); // 每题已考内容留档（题干+追问），供下一题查重
+        private Map<String, Object> checkpointDecision;               // 最近一次中途评分结果（本题未推进）
+        private int checkpointChainSize = -1;                         // 中途评分时的作答轮数：一致则「下一题」原样采用
+        private final List<String> checkpointGaps = new ArrayList<>(); // 中途评分的欠缺 → 后续追问锚点
 
         InterviewSession(String sessionId, String topic, List<String> questions) {
             this.sessionId = sessionId;
@@ -154,7 +157,9 @@ public class InterviewService {
                 1. 只依据「候选人回答」本身判分。下方参考资料仅供你了解标准答案，绝不能把资料里的内容当作候选人说过的话。
                 2. highlights 给 2-4 条，每条摘录候选人回答中的原话关键句（可截取），回答里没有的一个字都不许写。
                 3. 候选人回答为空、仅寒暄（如"你好"）、或与题目完全无关时：score 只能给 0 或 1，highlights 必须是空数组 []，gaps 写明"未有效作答"。
-                4. 吝啬给分：答对核心概念 5-6 分，补齐关键细节与深度才继续往上加。
+                4. 吝啬给分：答对核心概念 5-6 分，补齐关键细节与深度才继续往上加；
+                   若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
+                   满分应当罕见但可达，不许为了凑欠缺而编造欠缺。
                 """.formatted(question, userAnswer));
         if (hits.isEmpty()) {
             sb.append("\n（知识库未检索到相关资料，按通用标准评价）");
@@ -187,17 +192,25 @@ public class InterviewService {
     }
 
     /**
-     * 拷打循环的一轮：接收候选人作答，面试官要么继续追问（刨根问底），要么收尾打分进入下一题。
-     * 会话状态在服务端推进（当前题 / 追问链 / 得分台账），前端只管收发。
+     * 拷打循环的一轮，三种动作：常规作答（追问或终评）、checkpoint 中途评分（本题不结束）、
+     * advance 接受得分进下一题。会话状态在服务端推进，前端只管收发。
      *
-     * 返回 {"type":"followup","followUp":...,"round":n,"maxRounds":3}，或
+     * 返回 {"type":"followup","followUp":...,"round":n,"maxRounds":3}，
+     *      {"type":"checkpoint","score":n,"highlights":[...],"gaps":[...],"reference":...,"rounds":n}，或
      *      {"type":"score","score":n,"highlights":[...],"gaps":[...],"reference":...,
      *       "scores":[已完成各题得分], "nextIndex":n, "nextQuestion":"..."|"" , "done":bool}
      */
-    public Map<String, Object> turn(String sessionId, String answer, boolean giveUp) {
+    public Map<String, Object> turn(String sessionId, String answer, boolean giveUp,
+                                    boolean checkpoint, boolean advance) {
         InterviewSession s = sessions.get(sessionId == null ? "" : sessionId.trim());
         if (s == null) {
             throw new IllegalArgumentException("面试会话不存在或已结束，请重新开始面试");
+        }
+        if (checkpoint) {
+            return doCheckpoint(s);
+        }
+        if (advance) {
+            return doAdvance(s);
         }
         String question = s.questions.get(s.current);
         s.chain.add(answer == null || answer.isBlank() ? "（放弃作答）" : answer.trim());
@@ -262,15 +275,82 @@ public class InterviewService {
                 }
             }
         }
+        return finishQuestion(s, question, decision, score);
+    }
+
+    /**
+     * 中途评分（checkpoint）：本题不结束、不推进状态，给当前得分 + 欠缺快照。
+     * 欠缺同时记入会话，成为后续追问的锚点（针对欠缺一层层递进）；评分后无新作答就「下一题」
+     * 的话，原样采用本次得分，同一内容不二次评分、不产生分数漂移。
+     */
+    private Map<String, Object> doCheckpoint(InterviewSession s) {
+        String question = s.questions.get(s.current);
+        boolean hasAnswer = false;
+        for (int i = 0; i < s.chain.size(); i += 2) {
+            if (!isBailOut(s.chain.get(i))) {
+                hasAnswer = true;
+                break;
+            }
+        }
+        if (!hasAnswer) {
+            throw new IllegalArgumentException("还没有作答，先答一版再中途评分");
+        }
+        Map<String, Object> decision = judge(s, question, false).decision();
+        int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
+        if (score < 0) { // 模型没给分 → 用整条链补评
+            Map<String, Object> ev = evaluate(question, transcript(s.chain), s.topic);
+            score = ev.get("score") instanceof Number n2 ? n2.intValue() : 0;
+            decision.put("highlights", ev.getOrDefault("highlights", List.of()));
+            decision.put("gaps", ev.getOrDefault("gaps", List.of()));
+            decision.put("reference", ev.getOrDefault("reference", ""));
+        }
+        decision.put("highlights", honestHighlights(decision.get("highlights"), candidateTexts(s.chain)));
+        s.checkpointDecision = new HashMap<>(decision);
+        s.checkpointChainSize = s.chain.size();
+        s.checkpointGaps.clear();
+        if (decision.get("gaps") instanceof List<?> gl) {
+            for (Object g : gl) {
+                s.checkpointGaps.add(String.valueOf(g));
+            }
+        }
+        log.info("[面试留痕] session={} 题{} 中途评分 score={}（追问{}轮）欠缺={}",
+                s.sessionId, s.current + 1, score, s.followUps, s.checkpointGaps);
+        Map<String, Object> out = new HashMap<>();
+        out.put("type", "checkpoint");
+        out.put("score", score);
+        out.put("highlights", decision.getOrDefault("highlights", List.of()));
+        out.put("gaps", decision.getOrDefault("gaps", List.of()));
+        out.put("reference", decision.getOrDefault("reference", ""));
+        out.put("rounds", s.followUps);
+        return out;
+    }
+
+    /** 接受得分进入下一题（advance）：中途评分后无新作答原样采用；有新作答/无中途评分则终评全链。 */
+    private Map<String, Object> doAdvance(InterviewSession s) {
+        String question = s.questions.get(s.current);
+        Map<String, Object> decision;
+        if (s.checkpointDecision != null && s.chain.size() == s.checkpointChainSize) {
+            decision = s.checkpointDecision;
+            log.info("[面试留痕] session={} 题{} 采用中途评分进入下一题（评分后无新作答）",
+                    s.sessionId, s.current + 1);
+        } else if (s.chain.isEmpty()) {
+            decision = new HashMap<>(Map.of("score", 0, "highlights", List.of(),
+                    "gaps", List.of("未作答，直接跳过"), "reference", ""));
+        } else {
+            decision = judge(s, question, true).decision();
+        }
+        int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : 0;
+        return finishQuestion(s, question, decision, score);
+    }
+
+    /** 本题收尾：亮点闸门、记入台账、留档已考内容并查重、推进下一题（或收卷）。 */
+    private Map<String, Object> finishQuestion(InterviewSession s, String question,
+                                               Map<String, Object> decision, int score) {
         if (score <= 1) { // 硬闸：无效作答不允许带亮点
             decision.put("highlights", List.of());
         }
         // 硬闸 2：亮点只能逐字来自考生原话（防把参考资料内容当亮点），对照考生各轮作答过滤
-        List<String> said = new ArrayList<>();
-        for (int i = 0; i < s.chain.size(); i += 2) {
-            said.add(s.chain.get(i));
-        }
-        decision.put("highlights", honestHighlights(decision.get("highlights"), said));
+        decision.put("highlights", honestHighlights(decision.get("highlights"), candidateTexts(s.chain)));
         s.scores.add(score);
 
         int next = s.current + 1;
@@ -298,6 +378,9 @@ public class InterviewService {
         s.current = next;
         s.followUps = 0;
         s.chain.clear();
+        s.checkpointDecision = null;
+        s.checkpointChainSize = -1;
+        s.checkpointGaps.clear();
         if (done) {
             sessions.remove(s.sessionId);
         }
@@ -313,6 +396,15 @@ public class InterviewService {
         out.put("nextQuestion", done ? "" : s.questions.get(next));
         out.put("done", done);
         return out;
+    }
+
+    /** 对话链里的候选人各轮作答（偶数下标） */
+    private static List<String> candidateTexts(List<String> chain) {
+        List<String> said = new ArrayList<>();
+        for (int i = 0; i < chain.size(); i += 2) {
+            said.add(chain.get(i));
+        }
+        return said;
     }
 
     /** 单次 LLM 判定：继续追问还是收尾，顺带给出基于全链的评分字段。temperature=0 保证稳定。 */
@@ -342,6 +434,12 @@ public class InterviewService {
                 sb.append("\n").append(i + 1).append(". ").append(s.chain.get(i * 2 + 1));
             }
         }
+        if (!s.checkpointGaps.isEmpty()) {
+            sb.append("\n中途评分指出的欠缺（你的追问应优先针对这些欠缺一层一层递进验证，候选人已补齐的不要再问）：");
+            for (int i = 0; i < s.checkpointGaps.size(); i++) {
+                sb.append("\n").append(i + 1).append(". ").append(s.checkpointGaps.get(i));
+            }
+        }
         if (hits.isEmpty()) {
             sb.append("\n（知识库未检索到相关资料，按通用标准评价）");
         } else {
@@ -369,7 +467,9 @@ public class InterviewService {
                    最后一轮说"不知道"或放弃不把前面的贡献清零，只是封顶了深度分。
                    例：答对基本概念并解释清楚、后续追问中放弃 → 给 3-5 分而非 0-1 分。
                    highlights 摘录候选人原话中的关键句（可截取），不要写概括性评语；整体答非所问时 score 给 0 或 1 且 highlights 为空数组；
-                   未能深入的追问在 gaps 中体现；吝啬给分，答对核心概念 5-6 分，补齐深度才往上加""");
+                   未能深入的追问在 gaps 中体现；吝啬给分：答对核心概念 5-6 分，补齐关键细节与深度才继续往上加；
+                   若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
+                   满分应当罕见但可达，不许为了凑欠缺而编造欠缺""");
         if (mustScore) {
             sb.append("\n\n注意：本题追问次数已达上限或候选人已放弃，action 必须为 \"score\"。"
                     + "评分仍基于对话全程综合给出，不因最后放弃直接打 0 分。");

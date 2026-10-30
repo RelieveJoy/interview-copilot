@@ -76,7 +76,8 @@ public class InterviewController {
 
     /**
      * 拷打循环（前端面试模式走这里）：一轮作答 → 追问 或 打分进下一题。
-     * giveUp=true 表示候选人放弃本题，直接终评。
+     * giveUp=true 放弃本题直接终评；checkpoint=true 中途评分（本题不结束）；
+     * advance=true 接受当前得分进入下一题。
      */
     @PostMapping("/turn")
     public ResponseEntity<?> turn(@RequestBody(required = false) InterviewTurnRequest request) {
@@ -85,14 +86,16 @@ public class InterviewController {
         }
         String answer = request.answer() == null ? "" : request.answer().trim();
         boolean giveUp = Boolean.TRUE.equals(request.giveUp());
-        if (answer.isEmpty() && !giveUp) {
+        boolean checkpoint = Boolean.TRUE.equals(request.checkpoint());
+        boolean advance = Boolean.TRUE.equals(request.advance());
+        if (answer.isEmpty() && !giveUp && !checkpoint && !advance) {
             return ResponseEntity.badRequest().body(Map.of("error", "answer 不能为空"));
         }
         if (!apiKeyConfigured) {
             return keyMissing();
         }
         try {
-            return ResponseEntity.ok(interviewService.turn(request.sessionId(), answer, giveUp));
+            return ResponseEntity.ok(interviewService.turn(request.sessionId(), answer, giveUp, checkpoint, advance));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {

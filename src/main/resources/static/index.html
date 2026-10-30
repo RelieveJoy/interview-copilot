@@ -206,6 +206,7 @@
   .iv-q { display: flex; gap: 10px; align-items: baseline; }
   .iv-q .no.fu { background: var(--amber-soft); color: var(--amber); }
   .sumrow { display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border-bottom: 1px dashed var(--border); font-size: 13px; }
+  .eval .cp-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding: 8px 12px; background: var(--amber-soft); border-radius: 8px; font-size: 12px; opacity: .95; }
   .sumrow:last-child { border-bottom: none; }
   .iv-q .no {
     flex-shrink: 0; font-size: 12px; background: var(--accent-soft); color: var(--accent);
@@ -316,7 +317,8 @@
       <button class="btn" onclick="startInterview()">开始拷打</button>
       <button class="btn ghost" id="endBtn" style="display:none" onclick="endInterview(false)">⛔ 结束面试</button>
       <button class="btn ghost" id="giveUpBtn" style="display:none" onclick="giveUpClick()">🏳 答不上来，直接打分</button>
-      <div class="hint">出题 → 你作答 → 面试官基于你的笔记评分、指出欠缺并追问。</div>
+      <button class="btn ghost" id="cpBtn" style="display:none" onclick="cpClick()">📋 中途评分，看欠缺</button>
+      <div class="hint">出题 → 你作答 → 面试官基于你的笔记评分、指出欠缺并追问；随时可中途评分，按欠缺补答涨分。</div>
       <div class="stat" id="ivStat"></div>
       <div class="iv-progress" id="ivProgress">
         <div class="lbl" id="ivLbl"></div>
@@ -674,6 +676,7 @@ function ivRefresh() {
     `<i class="${i < interview.current ? 'done' : i === interview.current ? 'cur' : ''}"></i>`).join('');
   document.getElementById('endBtn').style.display = '';
   document.getElementById('giveUpBtn').style.display = '';
+  document.getElementById('cpBtn').style.display = '';
   modeSel.disabled = true;
 }
 
@@ -694,7 +697,7 @@ async function startInterview() {
     stat.textContent = ''; ivRefresh();
     const s = botShell('🎤 面试官');
     const c = s.querySelector('.content');
-    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。每题面试官会刨根追问（最多 3 轮），追问到底才打分、进入下一题；答不上来可随时点左侧「直接打分」。</blockquote></div>`);
+    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。每题面试官会刨根追问（最多 3 轮）；随时可点左侧「中途评分」看当前得分与欠缺，按欠缺继续补答就能涨分；答不上来点「直接打分」结束本题。</blockquote></div>`);
     msgs.push({ role: 'iv', html: c.querySelector('.body').outerHTML }); persist();
     showQuestion(); scrollBottom(true);
     ta.placeholder = '输入你的回答，回车提交';
@@ -739,24 +742,82 @@ async function submitAnswer(answer, giveUp = false) {
       return;
     }
     // 本题终评
-    renderEval(content, d);
-    msgs.push({ role: 'eval', d: { score: d.score, highlights: d.highlights, gaps: d.gaps, reference: d.reference, rounds: d.rounds } }); persist();
-    if (d.done) {
-      renderSummary(d.scores);
-      endInterview(true);
-      return;
-    }
-    if (d.nextQuestion) interview.questions[d.nextIndex] = d.nextQuestion; // 服务端查重可能换题，同步本地题目
-    interview.current = d.nextIndex; ivRefresh(); showQuestion();
+    handleScore(content, d);
   } catch (e) { status.remove(); shell.remove(); addErrorMsg(e.message); }
   finally { ivBusy = false; giveUpBtn.disabled = false; }
   ta.focus();
+}
+
+/** 终评响应的公共处理：评分卡 + 下一题/收卷 */
+function handleScore(content, d) {
+  renderEval(content, d);
+  msgs.push({ role: 'eval', d: { score: d.score, highlights: d.highlights, gaps: d.gaps, reference: d.reference, rounds: d.rounds } }); persist();
+  if (d.done) {
+    renderSummary(d.scores);
+    endInterview(true);
+    return;
+  }
+  if (d.nextQuestion) interview.questions[d.nextIndex] = d.nextQuestion; // 服务端查重可能换题，同步本地题目
+  interview.current = d.nextIndex; ivRefresh(); showQuestion();
 }
 
 function giveUpClick() {
   if (!interview.active || ivBusy) return;
   addUserMsg('🏳 这题答不上来了，直接打分');
   submitAnswer('这题我答不上来了，直接打分吧', true);
+}
+
+function cpClick() {
+  if (!interview.active || ivBusy) return;
+  addUserMsg('📋 先看看现在的得分和欠缺');
+  submitCheckpoint();
+}
+
+async function submitCheckpoint() {
+  if (ivBusy) return;
+  ivBusy = true;
+  const giveUpBtn = document.getElementById('giveUpBtn'), cpBtn = document.getElementById('cpBtn');
+  giveUpBtn.disabled = true; cpBtn.disabled = true;
+  const shell = botShell('🎤 面试官');
+  const content = shell.querySelector('.content');
+  const status = makeStatus(content);
+  status.set('中途评分中…');
+  try {
+    const r = await fetch('/api/interview/turn', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: interview.sessionId, checkpoint: true })
+    });
+    const d = await r.json();
+    status.remove();
+    if (!r.ok) { shell.remove(); addErrorMsg(d.error || ('HTTP ' + r.status)); return; }
+    renderEval(content, { ...d, checkpoint: true }); // 本题不结束：可按欠缺继续作答，或接受分数进下一题
+    msgs.push({ role: 'eval', d: { score: d.score, highlights: d.highlights, gaps: d.gaps, reference: d.reference, rounds: d.rounds, checkpoint: true } }); persist();
+  } catch (e) { status.remove(); shell.remove(); addErrorMsg(e.message); }
+  finally { ivBusy = false; giveUpBtn.disabled = false; cpBtn.disabled = false; }
+  ta.focus();
+}
+
+async function submitAdvance() {
+  if (!interview.active || ivBusy) return;
+  ivBusy = true;
+  const giveUpBtn = document.getElementById('giveUpBtn'), cpBtn = document.getElementById('cpBtn');
+  giveUpBtn.disabled = true; cpBtn.disabled = true;
+  const shell = botShell('🎤 面试官');
+  const content = shell.querySelector('.content');
+  const status = makeStatus(content);
+  status.set('结算本题…');
+  try {
+    const r = await fetch('/api/interview/turn', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: interview.sessionId, advance: true })
+    });
+    const d = await r.json();
+    status.remove();
+    if (!r.ok || d.type !== 'score') { shell.remove(); addErrorMsg((d && d.error) || ('HTTP ' + r.status)); return; }
+    handleScore(content, d);
+  } catch (e) { status.remove(); shell.remove(); addErrorMsg(e.message); }
+  finally { ivBusy = false; giveUpBtn.disabled = false; cpBtn.disabled = false; }
+  ta.focus();
 }
 
 function renderSummaryCard(scores) {
@@ -785,13 +846,16 @@ function renderEval(content, d) {
   const box = document.createElement('div');
   box.className = 'eval';
   let h = `<div class="head"><div class="score-ring" style="color:${color};background:${bg};border:2px solid ${color}">${d.score}<span style="font-size:10px;font-weight:400">/10</span></div>` +
-    `<div class="verdict"><b>${verdict}</b>基于知识库笔记的评分${d.rounds ? ' · 经 ' + d.rounds + ' 轮追问' : ''}</div></div>`;
+    `<div class="verdict"><b>${d.checkpoint ? '中途评估 · ' : ''}${verdict}</b>${d.checkpoint ? '本题未结束' : '基于知识库笔记的评分'}${d.rounds ? ' · 经 ' + d.rounds + ' 轮追问' : ''}</div></div>`;
   if (d.highlights && d.highlights.length)
     h += `<section class="good"><h4>✅ 亮点</h4><ul>${d.highlights.map(x => '<li>' + inlineMd(esc(String(x))) + '</li>').join('')}</ul></section>`;
   if (d.gaps && d.gaps.length)
     h += `<section class="bad"><h4>⚠️ 欠缺</h4><ul>${d.gaps.map(x => '<li>' + inlineMd(esc(String(x))) + '</li>').join('')}</ul></section>`;
   if (d.reference)
     h += `<details><summary>📖 参考要点（来自你的笔记）</summary><div class="body">${md(String(d.reference))}</div></details>`;
+  if (d.checkpoint)
+    h += `<div class="cp-actions"><span>针对欠缺继续作答，追问会锁定欠缺递进、分数重评；或直接进下一题：</span>` +
+      `<button class="btn ghost" onclick="submitAdvance()">接受 ${d.score} 分，下一题 ➤</button></div>`;
   box.innerHTML = h;
   content.appendChild(box);
   scrollBottom(true);
@@ -807,6 +871,7 @@ function endInterview(finished) {
   interview.questions = []; interview.current = -1;
   document.getElementById('endBtn').style.display = 'none';
   document.getElementById('giveUpBtn').style.display = 'none';
+  document.getElementById('cpBtn').style.display = 'none';
   modeSel.disabled = false;
   ta.placeholder = '输入面试题，如：讲讲 HashMap 的扩容机制';
   ivRefresh();
