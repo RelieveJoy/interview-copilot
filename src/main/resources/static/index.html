@@ -240,14 +240,12 @@
     border-radius: 14px; padding: 10px 12px; display: flex; gap: 10px; align-items: flex-end;
   }
   .composer:focus-within { border-color: var(--accent); }
-  #modeSel {
-    background: var(--bg); color: var(--muted); border: 1px solid var(--border); border-radius: 8px;
-    padding: 7px 6px; font-size: 12.5px; align-self: center; max-width: 92px;
-  }
   #ta {
     flex: 1; background: none; border: none; color: var(--text); font-family: inherit;
     font-size: 14.5px; line-height: 1.55; resize: none; max-height: 170px; padding: 6px 2px;
+    scrollbar-width: none; -ms-overflow-style: none; /* 内容超高时照常滚动，但不显示滚动条（DeepSeek/豆包同款处理） */
   }
+  #ta::-webkit-scrollbar { display: none; }
   #ta::placeholder { color: var(--faint); }
   #ta:focus { outline: none; }
   #sendBtn {
@@ -332,10 +330,6 @@
     <div id="scroller"><div class="thread" id="thread"></div></div>
     <div class="composer-wrap">
       <div class="composer">
-        <select id="modeSel" title="RAG=检索你的笔记作答；直连=裸模型（对照组）">
-          <option value="rag">RAG 增强</option>
-          <option value="ask">直连模式</option>
-        </select>
         <textarea id="ta" rows="1" placeholder="输入面试题，如：讲讲 HashMap 的扩容机制" onkeydown="taKey(event)"></textarea>
         <button id="sendBtn" onclick="sendClick()" title="发送（Enter）">➤</button>
       </div>
@@ -354,8 +348,6 @@ const thread = document.getElementById('thread');
 const scroller = document.getElementById('scroller');
 const ta = document.getElementById('ta');
 const sendBtn = document.getElementById('sendBtn');
-const modeSel = document.getElementById('modeSel');
-
 let sessionId = localStorage.getItem(LS_SID) || crypto.randomUUID();
 localStorage.setItem(LS_SID, sessionId);
 let msgs = [];
@@ -587,7 +579,7 @@ async function send() {
   if (interview.active) { addUserMsg(q); await submitAnswer(q); return; }
 
   addUserMsg(q);
-  await runStream(modeSel.value, q, false);
+  await runStream('rag', q, false);
 }
 
 async function runStream(mode, q, addUser) {
@@ -677,7 +669,6 @@ function ivRefresh() {
   document.getElementById('endBtn').style.display = '';
   document.getElementById('giveUpBtn').style.display = '';
   document.getElementById('cpBtn').style.display = '';
-  modeSel.disabled = true;
 }
 
 async function startInterview() {
@@ -872,7 +863,6 @@ function endInterview(finished) {
   document.getElementById('endBtn').style.display = 'none';
   document.getElementById('giveUpBtn').style.display = 'none';
   document.getElementById('cpBtn').style.display = 'none';
-  modeSel.disabled = false;
   ta.placeholder = '输入面试题，如：讲讲 HashMap 的扩容机制';
   ivRefresh();
 }
