@@ -14,7 +14,7 @@
 | 💬 RAG 问答 | 检索最相关笔记段落注入提示词，回答附**真实引用来源**（文件名 + 相似度，服务端事实非模型自述） |
 | 🧠 多轮记忆 | 按 sessionId 隔离的对话记忆窗口，支持连续追问 |
 | 🔀 模式对比 | 前端对话固定走 RAG；直连（无 RAG）保留为 `/api/ask`、`/api/ask/stream` 接口，作开发/评测对照组（见下方实测） |
-| 🎤 面试模式 | 按主题（JVM/Redis/并发/MySQL…从笔记文件名自动提取）出 N 道拷问题，逐题评分：得分、亮点、欠缺、参考要点；追问不设轮数上限，拷打到底 |
+| 🎤 面试模式 | 按主题（JVM/Redis/并发/MySQL…从笔记文件名自动提取）出 N 道拷问题，逐题评分：得分、亮点、欠缺、参考要点；追问不设轮数上限，拷打到底；**综合模式**跨主题混合出题，评分检索按题所属主题逐题限域，复盘报告按主题分列薄弱项 |
 | 🔔 复盘报告 | 面试收卷后**后台异步生成**复盘报告（逐题得分 / 总体评价 / 薄弱项归类 / 建议复习笔记 / 下一步），右上角铃铛提醒，可预览、复制、下载 `.md`；「建议复习」只从本场真实检索命中的笔记里挑（服务端白名单校验，杜绝编造文件名） |
 | 🩹 异常兜底 | 未配置 key、路径非法、LLM 调用失败均返回结构化中文错误，不炸堆栈 |
 
@@ -88,7 +88,7 @@ curl -X POST localhost:8090/api/knowledge/import -H "Content-Type: application/j
 | GET | `/api/knowledge/status` | 已导入文件数 |
 | GET | `/api/knowledge/search?q=&limit=N` | 检索诊断（只走向量检索，零 token 消耗；limit 默认 4） |
 | GET | `/api/interview/topics` | 从笔记文件名前缀提取的面试主题 |
-| POST | `/api/interview/start` | `{"topic","count"}` → 生成题目列表 |
+| POST | `/api/interview/start` | `{"topic","count"}` → 生成题目列表；`topic` 传「综合」时跨主题混合出题，响应含逐题 `topics` |
 | POST | `/api/interview/turn` | `{"sessionId","answer"|"giveUp"|"checkpoint"|"advance"}` → 拷打循环一轮：追问 / 中途评分（本题不结束）/ 终评+下一题 |
 | GET | `/api/interview/report?sessionId=` | 复盘报告状态与产物（`status`: `generating` / `ready` / `failed` / `none`），收卷后前端轮询此接口 |
 | POST | `/api/interview/report` | `{"sessionId"}` → 复盘报告失败重试 / 重新生成 |

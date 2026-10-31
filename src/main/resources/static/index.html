@@ -205,6 +205,7 @@
   /* 面试模式消息 */
   .iv-q { display: flex; gap: 10px; align-items: baseline; }
   .iv-q .no.fu { background: var(--amber-soft); color: var(--amber); }
+  .iv-q .no.tp { background: var(--green-soft); color: var(--green); border-color: rgba(62,207,142,.35); font-family: inherit; }
   .sumrow { display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border-bottom: 1px dashed var(--border); font-size: 13px; }
   .eval .cp-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; padding: 8px 12px; background: var(--amber-soft); border-radius: 8px; font-size: 12px; opacity: .95; }
   .sumrow:last-child { border-bottom: none; }
@@ -426,7 +427,7 @@ let msgs = [];
 try { msgs = JSON.parse(localStorage.getItem(LS_MSGS) || '[]'); } catch (e) { msgs = []; }
 let busy = false;           // 正在流式生成
 let aborter = null;         // AbortController
-const interview = { active: false, sessionId: null, questions: [], current: -1, topic: '' };
+const interview = { active: false, sessionId: null, questions: [], qTopics: [], current: -1, topic: '' };
 
 function persist() { localStorage.setItem(LS_MSGS, JSON.stringify(msgs.slice(-80))); }
 function toast(t) {
@@ -726,7 +727,7 @@ async function loadTopics() {
     const d = await (await fetch('/api/interview/topics')).json();
     const sel = document.getElementById('topicSel');
     sel.innerHTML = (d.topics && d.topics.length)
-      ? d.topics.map(t => `<option>${t}</option>`).join('') + '<option>Java 后端</option>'
+      ? d.topics.map(t => `<option>${t}</option>`).join('') + '<option>综合（全主题混合）</option><option>Java 后端</option>'
       : '<option>Java 后端</option>';
   } catch (e) { /* ignore */ }
 }
@@ -756,7 +757,7 @@ async function startInterview() {
     const d = await r.json();
     if (!r.ok) { stat.textContent = '❌ ' + (d.error || r.status); return; }
     interview.active = true; interview.sessionId = d.sessionId;
-    interview.questions = d.questions; interview.current = 0; interview.topic = d.topic;
+    interview.questions = d.questions; interview.qTopics = d.topics || []; interview.current = 0; interview.topic = d.topic;
     stat.textContent = ''; ivRefresh();
     const s = botShell('🎤 面试官');
     const c = s.querySelector('.content');
@@ -770,10 +771,12 @@ async function startInterview() {
 function showQuestion() {
   const q = interview.questions[interview.current];
   if (q === undefined) { endInterview(true); return; }
+  const t = interview.qTopics[interview.current];
+  const chip = t && t !== interview.topic ? `<span class="no tp">${esc(t)}</span>` : ''; // 综合模式：题目主题徽标
   const s = botShell('🎤 面试官');
   s.querySelector('.content').insertAdjacentHTML('beforeend',
-    `<div class="body"><div class="iv-q"><span class="no">${interview.current + 1}/${interview.questions.length}</span><div>${md(q)}</div></div></div>`);
-  msgs.push({ role: 'ivq', text: q, no: (interview.current + 1) + '/' + interview.questions.length }); persist();
+    `<div class="body"><div class="iv-q"><span class="no">${interview.current + 1}/${interview.questions.length}</span>${chip}<div>${md(q)}</div></div></div>`);
+  msgs.push({ role: 'ivq', text: q, no: (interview.current + 1) + '/' + interview.questions.length, t: t !== interview.topic ? t : undefined }); persist();
   ivRefresh(); scrollBottom(true);
 }
 
@@ -935,7 +938,7 @@ function endInterview(finished) {
       `<div class="body"><blockquote>${finished ? '<b>面试结束。</b>回顾上面的欠缺点，去知识库对应笔记里补一补。' : '面试已中止。'}</blockquote></div>`);
   }
   interview.active = false; interview.sessionId = null;
-  interview.questions = []; interview.current = -1;
+  interview.questions = []; interview.qTopics = []; interview.current = -1;
   document.getElementById('endBtn').style.display = 'none';
   document.getElementById('giveUpBtn').style.display = 'none';
   document.getElementById('cpBtn').style.display = 'none';
@@ -1198,7 +1201,7 @@ function renderAll() {
     } else if (m.role === 'ivq') {
       const s = botShell('🎤 面试官');
       s.querySelector('.content').insertAdjacentHTML('beforeend',
-        `<div class="body"><div class="iv-q"><span class="no">${m.no || 'Q'}</span><div>${md(m.text)}</div></div></div>`);
+        `<div class="body"><div class="iv-q"><span class="no">${m.no || 'Q'}</span>${m.t ? `<span class="no tp">${esc(m.t)}</span>` : ''}<div>${md(m.text)}</div></div></div>`);
     } else if (m.role === 'eval') {
       const s = botShell('🎤 面试官');
       renderEval(s.querySelector('.content'), m.d);

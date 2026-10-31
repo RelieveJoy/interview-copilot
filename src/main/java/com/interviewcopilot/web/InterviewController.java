@@ -54,7 +54,8 @@ public class InterviewController {
         return ResponseEntity.ok(Map.of(
                 "sessionId", session.getSessionId(),
                 "topic", session.getTopic(),
-                "questions", session.getQuestions()));
+                "questions", session.getQuestions(),
+                "topics", session.getQuestionTopics())); // 综合模式下逐题主题（单主题模式与会话主题一致）
     }
 
     @PostMapping("/answer")

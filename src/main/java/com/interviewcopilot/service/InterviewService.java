@@ -103,7 +103,8 @@ public class InterviewService {
         private Map<String, Object> checkpointDecision;               // 最近一次中途评分结果（本题未推进）
         private int checkpointChainSize = -1;                         // 中途评分时的作答轮数：一致则「下一题」原样采用
         private final List<String> checkpointGaps = new ArrayList<>(); // 中途评分的欠缺 → 后续追问锚点
-        private final List<Map<String, Object>> questionLog = new ArrayList<>(); // 逐题留档（题干/得分/亮点/欠缺/追问/涉及笔记），收卷后供复盘报告用
+        private final List<String> questionTopics = new ArrayList<>(); // 每题主题（综合模式下各题不同，评分检索按题限域）
+        private final List<Map<String, Object>> questionLog = new ArrayList<>(); // 逐题留档（题干/得分/亮点/欠缺/追问/涉及笔记/主题），收卷后供复盘报告用
 
         InterviewSession(String sessionId, String topic, List<String> questions) {
             this.sessionId = sessionId;
@@ -114,6 +115,7 @@ public class InterviewService {
         public String getSessionId() { return sessionId; }
         public String getTopic() { return topic; }
         public List<String> getQuestions() { return questions; }
+        public List<String> getQuestionTopics() { return questionTopics; }
     }
 
     public InterviewService(OpenAiChatModel chatModel,
@@ -134,37 +136,83 @@ public class InterviewService {
                 .toList();
     }
 
-    /** 开始一场面试：LLM 按主题生成 N 道题，失败时回退到模板题。 */
+    /** 开始一场面试：LLM 按主题生成 N 道题，失败时回退到模板题。topic 传「综合」时跨主题混合出题（每题带主题标注）。 */
     public InterviewSession start(String topic, int count) {
         String safeTopic = (topic == null || topic.isBlank()) ? "Java 后端" : topic.trim();
         int n = Math.max(1, Math.min(10, count));
+        List<String> available = topics();
+        boolean mixed = safeTopic.startsWith("综合") && !available.isEmpty();
 
-        List<String> questions;
+        List<String> questions = new ArrayList<>();
+        List<String> qTopics = new ArrayList<>();
         try {
-            String prompt = """
-                    你是资深 Java 面试官。围绕主题「%s」出 %d 道高频面试拷问题，要求：
-                    由浅入深、可口头作答、覆盖该主题核心考点，不要和别的主题混杂，各题考点相互独立不重叠。
-                    题目必须是中文。只输出一个 JSON 字符串数组，形如 ["问题1","问题2"]，不要任何多余文字。"""
-                    .formatted(safeTopic, n);
-            questions = parseArray(chatModel.chat(prompt));
-            if (questions.size() > n) {
-                questions = questions.subList(0, n);
+            if (mixed) {
+                String prompt = """
+                        你是资深 Java 面试官，正在安排一场综合面试，从候选人的知识库主题里混合出题。
+                        可用主题：%s
+                        出 %d 道题，要求：尽量覆盖不同主题（同主题最多一道，除非题数超过主题数）、由浅入深、
+                        可口头作答、覆盖各主题核心考点、各题考点相互独立不重叠，题目必须是中文。
+                        只输出严格 JSON 数组（不要 markdown 代码块、不要多余文字），形如：
+                        [{"topic":"主题","question":"问题"},{"topic":"主题","question":"问题"}]"""
+                        .formatted(String.join("、", available), n);
+                for (Map<String, Object> o : parseObjectArray(chatModel.chat(prompt))) {
+                    if (o.get("question") instanceof String q && !q.isBlank()) {
+                        questions.add(q.trim());
+                        qTopics.add(o.get("topic") instanceof String t && !t.isBlank() ? t.trim() : "Java 后端");
+                    }
+                }
+            } else {
+                String prompt = """
+                        你是资深 Java 面试官。围绕主题「%s」出 %d 道高频面试拷问题，要求：
+                        由浅入深、可口头作答、覆盖该主题核心考点，不要和别的主题混杂，各题考点相互独立不重叠。
+                        题目必须是中文。只输出一个 JSON 字符串数组，形如 ["问题1","问题2"]，不要任何多余文字。"""
+                        .formatted(safeTopic, n);
+                questions = parseArray(chatModel.chat(prompt));
             }
         } catch (Exception e) {
             log.warn("LLM 出题失败, 使用模板题: {}", e.getMessage());
-            questions = List.of(
-                    "讲一讲「" + safeTopic + "」这个主题下你最熟悉的一个核心知识点，讲透它。",
-                    "「" + safeTopic + "」相关的内容在实际项目中怎么用？举一个你处理过的场景。",
-                    "关于「" + safeTopic + "」，面试官常追问的坑/误区是什么？正确的理解是什么？",
-                    "把「" + safeTopic + "」和一个相近的技术概念对比着讲一下。",
-                    "如果系统出问题，你会怎么用「" + safeTopic + "」的知识去排查？").subList(0, n);
+            questions.clear();
+        }
+        if (questions.size() > n) {
+            questions = new ArrayList<>(questions.subList(0, n));
+            if (!qTopics.isEmpty()) {
+                qTopics = new ArrayList<>(qTopics.subList(0, n));
+            }
+        }
+        while (qTopics.size() < questions.size()) {
+            qTopics.add(mixed ? "Java 后端" : safeTopic);
+        }
+        if (questions.isEmpty()) { // 模板兜底
+            if (mixed) {
+                for (int i = 0; i < n; i++) {
+                    String t = available.get(i % available.size());
+                    questions.add("讲一讲「" + t + "」这个主题下你最熟悉的一个核心知识点，讲透它。");
+                    qTopics.add(t);
+                }
+            } else {
+                questions.addAll(List.of(
+                        "讲一讲「" + safeTopic + "」这个主题下你最熟悉的一个核心知识点，讲透它。",
+                        "「" + safeTopic + "」相关的内容在实际项目中怎么用？举一个你处理过的场景。",
+                        "关于「" + safeTopic + "」，面试官常追问的坑/误区是什么？正确的理解是什么？",
+                        "把「" + safeTopic + "」和一个相近的技术概念对比着讲一下。",
+                        "如果系统出问题，你会怎么用「" + safeTopic + "」的知识去排查？").subList(0, n));
+                for (int i = 0; i < n; i++) {
+                    qTopics.add(safeTopic);
+                }
+            }
         }
 
         String sessionId = UUID.randomUUID().toString().substring(0, 8);
         // 拷贝成可变列表：查重闸换题时要原地替换某道题
         InterviewSession session = new InterviewSession(sessionId, safeTopic, new ArrayList<>(questions));
+        session.questionTopics.addAll(qTopics);
         sessions.put(sessionId, session);
         return session;
+    }
+
+    /** 第 index 题的主题（综合模式各题不同；单主题模式与会话主题一致） */
+    private static String topicFor(InterviewSession s, int index) {
+        return index >= 0 && index < s.questionTopics.size() ? s.questionTopics.get(index) : s.topic;
     }
 
     public InterviewSession session(String sessionId) {
@@ -305,7 +353,7 @@ public class InterviewService {
         // ---- 收尾打分 ----
         int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
         if (score < 0) { // 模型该评没评（或解析失败）→ 用整条链补评一次
-            Map<String, Object> ev = evaluate(question, transcript(s.chain), s.topic);
+            Map<String, Object> ev = evaluate(question, transcript(s.chain), topicFor(s, s.current));
             score = ev.get("score") instanceof Number n2 ? n2.intValue() : 0;
             decision.put("highlights", ev.getOrDefault("highlights", List.of()));
             decision.put("gaps", ev.getOrDefault("gaps", List.of()));
@@ -322,7 +370,7 @@ public class InterviewService {
                 }
             }
             if (!prior.isEmpty()) {
-                Map<String, Object> ev = evaluate(question, String.join("\n", prior), s.topic);
+                Map<String, Object> ev = evaluate(question, String.join("\n", prior), topicFor(s, s.current));
                 int es = ev.get("score") instanceof Number n3 ? n3.intValue() : -1;
                 if (es >= 0) {
                     log.info("[面试留痕] session={} 题{} 放弃轮综合重评：judge={} → 综合={}",
@@ -362,7 +410,7 @@ public class InterviewService {
         Map<String, Object> decision = judge(s, question, false).decision();
         int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
         if (score < 0) { // 模型没给分 → 用整条链补评
-            Map<String, Object> ev = evaluate(question, transcript(s.chain), s.topic);
+            Map<String, Object> ev = evaluate(question, transcript(s.chain), topicFor(s, s.current));
             score = ev.get("score") instanceof Number n2 ? n2.intValue() : 0;
             decision.put("highlights", ev.getOrDefault("highlights", List.of()));
             decision.put("gaps", ev.getOrDefault("gaps", List.of()));
@@ -406,7 +454,7 @@ public class InterviewService {
         }
         int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
         if (score < 0) { // 模型没给分/解析失败 → 用整条链补评（与 turn() 收尾路径同款兜底，不冤枉记 0 分）
-            Map<String, Object> ev = evaluate(question, transcript(s.chain), s.topic);
+            Map<String, Object> ev = evaluate(question, transcript(s.chain), topicFor(s, s.current));
             score = ev.get("score") instanceof Number n2 ? n2.intValue() : 0;
             decision.put("highlights", ev.getOrDefault("highlights", List.of()));
             decision.put("gaps", ev.getOrDefault("gaps", List.of()));
@@ -461,7 +509,9 @@ public class InterviewService {
         qlog.put("gaps", decision.getOrDefault("gaps", List.of()));
         qlog.put("followUps", asked);
         qlog.put("rounds", rounds);
-        qlog.put("files", filesFor(question, s.topic));
+        String qTopic = topicFor(s, s.current);
+        qlog.put("topic", qTopic);
+        qlog.put("files", filesFor(question, qTopic));
         s.questionLog.add(qlog);
 
         if (!done) { // 查重闸：下一题若与前题考点重复/衍生（脱裤放屁），换一个独立考点
@@ -549,9 +599,10 @@ public class InterviewService {
 
     /** 单次 LLM 判定：继续追问还是收尾，顺带给出基于全链的评分字段。temperature=0 保证稳定。 */
     private JudgeResult judge(InterviewSession s, String question, boolean mustScore) {
+        String qTopic = topicFor(s, s.current); // 综合模式逐题限域：题问什么主题就检索哪个主题的笔记
         List<KnowledgeService.KnowledgeHit> hits;
-        if (s.topic != null && !s.topic.isBlank()) {
-            hits = knowledgeService.searchInFiles(question, s.topic.trim() + "-", 4);
+        if (qTopic != null && !qTopic.isBlank()) {
+            hits = knowledgeService.searchInFiles(question, qTopic.trim() + "-", 4);
         } else {
             hits = List.of();
         }
@@ -567,7 +618,7 @@ public class InterviewService {
 
                 对话记录：
                 %s
-                """.formatted(s.topic, question, transcript(s.chain)));
+                """.formatted(qTopic, question, transcript(s.chain)));
         if (s.followUps > 0) {
             sb.append("\n你已问过的追问（新追问严禁与其重复或仅换措辞重问同一件事）：");
             for (int i = 0; i < s.followUps; i++) {
@@ -640,7 +691,7 @@ public class InterviewService {
                     {"changed": true 或 false, "question": "..."}
                     - 不重复：changed=false，question 原样返回原题。
                     - 重复或衍生：changed=true，question 给出「%s」主题下一个尚未考过的独立考点的新题，问法与其他题一致。"""
-                    .formatted(s.topic, index + 1, String.join("\n", s.coveredNotes), nextQuestion, s.topic);
+                    .formatted(topicFor(s, index), index + 1, String.join("\n", s.coveredNotes), nextQuestion, topicFor(s, index));
             Map<String, Object> d = parseObject(evalChatModel.chat(prompt));
             boolean changed = Boolean.TRUE.equals(d.get("changed"));
             String q = d.get("question") instanceof String x && !x.isBlank() ? x.trim() : nextQuestion;
@@ -678,10 +729,17 @@ public class InterviewService {
         long t0 = System.currentTimeMillis();
         try {
             StringBuilder qs = new StringBuilder();
+            boolean mixed = e.questionLog.stream().anyMatch(q -> {
+                String t = str(q.get("topic"));
+                return !t.isEmpty() && !t.equals(e.topic);
+            });
             for (int i = 0; i < e.questionLog.size(); i++) {
                 Map<String, Object> q = e.questionLog.get(i);
-                qs.append("\n第").append(i + 1).append("题「").append(q.get("question")).append("」 得分 ")
-                  .append(q.get("score")).append("/10");
+                qs.append("\n第").append(i + 1).append("题「");
+                if (mixed && !str(q.get("topic")).isEmpty()) {
+                    qs.append(str(q.get("topic"))).append(" · ");
+                }
+                qs.append(q.get("question")).append("」 得分 ").append(q.get("score")).append("/10");
                 if (q.get("highlights") instanceof List<?> hl && !hl.isEmpty()) {
                     qs.append("\n  亮点：").append(String.join("；", hl.stream().map(String::valueOf).toList()));
                 }
@@ -759,21 +817,34 @@ public class InterviewService {
         md.append("# 面试复盘 · 《").append(e.topic).append("》\n\n");
         md.append("> ").append(e.date).append(" · 共 ").append(e.scores.size()).append(" 题 · 平均 ")
           .append(String.format("%.1f", avg)).append(" / 10\n\n");
-        md.append("## 逐题得分\n\n| # | 题目 | 得分 |\n|---|---|---|\n");
+        boolean mixed = e.questionLog.stream().anyMatch(q -> {
+            String t = str(q.get("topic"));
+            return !t.isEmpty() && !t.equals(e.topic);
+        });
+        md.append(mixed ? "## 逐题得分\n\n| # | 主题 | 题目 | 得分 |\n|---|---|---|---|\n"
+                        : "## 逐题得分\n\n| # | 题目 | 得分 |\n|---|---|---|\n");
         for (int i = 0; i < e.questionLog.size(); i++) {
             Map<String, Object> q = e.questionLog.get(i);
-            md.append("| ").append(i + 1).append(" | ")
+            md.append("| ").append(i + 1).append(" | ").append(mixed ? str(q.get("topic")) + " | " : "")
               .append(String.valueOf(q.get("question")).replace("|", "／")).append(" | ")
               .append(q.get("score")).append("/10 |\n");
         }
         md.append("\n## 总体评价\n\n").append(str(d.get("overall"))).append("\n");
         md.append("\n## 薄弱项归类\n\n");
         if (d.get("weakAreas") instanceof List<?> was && !was.isEmpty()) {
+            java.util.Set<String> seen = new java.util.HashSet<>();
             for (Object w0 : was) {
                 if (w0 instanceof Map<?, ?> w) {
+                    String key = str(w.get("area")).replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
+                    if (!key.isEmpty() && !seen.add(key)) {
+                        continue; // 同名薄弱领域去重（小模型会把同一领域换个说法罗列两遍）
+                    }
                     md.append("- **").append(str(w.get("area"))).append("** — ")
                       .append(str(w.get("detail"))).append("\n  - 补法：").append(str(w.get("advice"))).append("\n");
                 }
+            }
+            if (seen.isEmpty()) {
+                md.append("（本场未发现明显薄弱项，保持手感）\n");
             }
         } else {
             md.append("（本场未发现明显薄弱项，保持手感）\n");
@@ -885,6 +956,17 @@ public class InterviewService {
         }
         return mapper.readValue(raw.substring(l, r + 1),
                 mapper.getTypeFactory().constructCollectionType(List.class, String.class));
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> parseObjectArray(String raw) throws Exception {
+        int l = raw.indexOf('[');
+        int r = raw.lastIndexOf(']');
+        if (l < 0 || r <= l) {
+            throw new IllegalStateException("LLM 未返回 JSON 数组: " + raw);
+        }
+        return mapper.readValue(raw.substring(l, r + 1),
+                mapper.getTypeFactory().constructCollectionType(List.class, Map.class));
     }
 
     private Map<String, Object> parseObject(String raw) {
