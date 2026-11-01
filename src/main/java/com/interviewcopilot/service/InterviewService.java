@@ -83,6 +83,14 @@ public class InterviewService {
                     + "不会|没有了?|没了|答不上来了?|答不上来了?直接打分吧?|直接打分吧?|放弃了?|我放弃了?|"
                     + "这个我不会|这题不会|不能了?|没法|没办法|说不上来|讲不出来|答不上|不会答|不知道怎么答)$");
 
+    /**
+     * 服务端强制追问每题上限。实测判定模型在深链里永远能列出新欠缺（甚至越挖越超纲，
+     * "逃逸分析优化效果衡量指标"这种八股水位以下的东西都算欠缺），若无限尊重"欠缺非空"
+     * 就永不收卷——候选人答掉一个欠缺、模型再造一个新的，死循环。强制续命至多 2 次，
+     * 额度用尽后尊重判定模型自己的收卷决定（模型主动追问仍不限轮数，拷打到底不受影响）。
+     */
+    private static final int MAX_FORCED_FOLLOWUPS = 2;
+
     private static boolean isBailOut(String answer) {
         // 剥标点/语气字 + 剥「这道题/这个/这题/我」开头，让前端按钮文案「这题我答不上来了，直接打分吧」也能命中
         String s = answer.replaceAll("[\\s!！。\\.?？~～…，,、；;：:的]", "")
@@ -97,6 +105,7 @@ public class InterviewService {
         private final List<String> questions;
         private int current;                                   // 当前题下标
         private int followUps;                                 // 本题已追问次数
+        private int forcedFollowups;                           // 本题服务端强制追问次数（有上限，见 MAX_FORCED_FOLLOWUPS）
         private final List<String> chain = new ArrayList<>();   // 本题对话链：回答,追问,回答,追问…
         private final List<Integer> scores = new ArrayList<>(); // 已完成题的得分
         private final List<String> coveredNotes = new ArrayList<>(); // 每题已考内容留档（题干+追问），供下一题查重
@@ -249,7 +258,8 @@ public class InterviewService {
                 3. 候选人回答为空、仅寒暄（如"你好"）、或与题目完全无关时：score 只能给 0 或 1，highlights 必须是空数组 []，gaps 写明"未有效作答"。
                 4. 吝啬给分：答对核心概念 5-6 分，补齐关键细节与深度才继续往上加；
                    若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
-                   满分应当罕见但可达，不许为了凑欠缺而编造欠缺。
+                   满分应当罕见但可达，不许为了凑欠缺而编造欠缺。gaps 只列本题目考点范围内的真实欠缺，
+                   参考资料之外的深水区（如编译器内部实现、量化衡量指标）不算欠缺。
                 """.formatted(question, userAnswer));
         if (hits.isEmpty()) {
             sb.append("\n（知识库未检索到相关资料，按通用标准评价）");
@@ -309,7 +319,7 @@ public class InterviewService {
         s.chain.add(answer == null || answer.isBlank() ? "（放弃作答）" : answer.trim());
 
         boolean bail = isBailOut(s.chain.get(s.chain.size() - 1));
-        boolean mustScore = giveUp || bail; // 追问不上限：出口只有放弃信号 / 有欠缺继续拷 / 判重闸
+        boolean mustScore = giveUp || bail; // 追问不上限：出口 = 放弃信号 / 判定收卷（强制续命至多 MAX_FORCED_FOLLOWUPS 次）/ 判重闸
         JudgeResult d = judge(s, question, mustScore);
         if (bail) {
             log.info("[面试留痕] session={} 题{} 候选人放弃信号命中，跳过追问直接终评", s.sessionId, s.current + 1);
@@ -333,20 +343,31 @@ public class InterviewService {
         if (!followup && !mustScore) {
             // 硬闸：有欠缺不收卷——判定模型"充分覆盖"偏宽松（一句话作答也能 9 分直接终评），
             // 只要仍有欠缺且候选人没放弃，就针对欠缺继续拷问（拷打是默认动作，无欠缺才收卷）。
-            // 注意解析兜底（score=-1，gaps 是"解析失败"哨兵文案）不算真欠缺，走下方补评路径。
+            // 但强制续命每题至多 MAX_FORCED_FOLLOWUPS 次：欠缺清单在深链里永不清空（模型每轮
+            // 都能造出新欠缺），无限强制 = 永不收卷。额度用尽后尊重判定模型的收卷决定，剩余
+            // 欠缺随评分卡正常呈现。解析兜底（score=-1，gaps 是哨兵文案）不算真欠缺，走补评路径。
             boolean parseFailed = decision.get("score") instanceof Number pn && pn.intValue() < 0;
             List<?> gaps = decision.get("gaps") instanceof List<?> gl ? gl : List.of();
-            if (!parseFailed && !gaps.isEmpty()) {
+            boolean hasRealGaps = !parseFailed && !gaps.isEmpty();
+            if (hasRealGaps && s.forcedFollowups < MAX_FORCED_FOLLOWUPS) {
                 String cand = fu;
+                String rawGap = null;
                 if (cand == null) {
-                    String g = String.valueOf(gaps.get(0));
-                    cand = "你的回答里「" + (g.length() > 60 ? g.substring(0, 60) + "…" : g) + "」还没讲透，展开讲讲这部分";
+                    rawGap = pickGap(gaps);
+                    cand = "你的回答里「" + (rawGap.length() > 60 ? rawGap.substring(0, 60) + "…" : rawGap) + "」还没讲透，展开讲讲这部分";
                 }
-                if (!isAskedBefore(s, cand)) { // 合成/候补追问自己也不能与已问过的重复，重复则放弃强制、正常终评
+                // 合成/候补追问不能与已问过的重复；合成模板"你的回答里「X」还没讲透"会稀释相似度
+                // 骗过判重（实测：刚答完的欠缺换个壳又被问一遍），所以裸欠缺文本也要过一遍判重
+                if (!isAskedBefore(s, cand) && (rawGap == null || !isAskedBefore(s, rawGap))) {
                     fu = cand;
                     followup = true;
-                    log.info("[面试留痕] session={} 题{} 终评判定仍有欠缺，服务端强制追问：{}", s.sessionId, s.current + 1, fu);
+                    s.forcedFollowups++;
+                    log.info("[面试留痕] session={} 题{} 终评判定仍有欠缺，服务端强制追问（{}/{}）：{}",
+                            s.sessionId, s.current + 1, s.forcedFollowups, MAX_FORCED_FOLLOWUPS, fu);
                 }
+            } else if (hasRealGaps) {
+                log.info("[面试留痕] session={} 题{} 判定仍有欠缺但强制追问额度已用完（{}次），收卷",
+                        s.sessionId, s.current + 1, MAX_FORCED_FOLLOWUPS);
             }
         }
         if (followup) {
@@ -526,6 +547,7 @@ public class InterviewService {
 
         s.current = next;
         s.followUps = 0;
+        s.forcedFollowups = 0;
         s.chain.clear();
         s.checkpointDecision = null;
         s.checkpointChainSize = -1;
@@ -559,6 +581,21 @@ public class InterviewService {
             }
         }
         return false;
+    }
+
+    /**
+     * 挑一条用来合成追问的欠缺：优先选 6~60 字的"干净"短欠缺。
+     * 实测判定模型会把候选人整段回答原样塞进 gaps 当欠缺，直接用 gaps[0] 会合成
+     * "你的回答里「（整段答案截断60字）」还没讲透"这种没头没尾的追问。
+     */
+    private static String pickGap(List<?> gaps) {
+        for (Object g : gaps) {
+            String t = String.valueOf(g).trim();
+            if (t.length() >= 6 && t.length() <= 60) {
+                return t;
+            }
+        }
+        return String.valueOf(gaps.get(0)).trim();
     }
 
     /** 两问是否同题：归一化后完全相同 / 互为包含（短边≥8字）/ 字符二元组 Jaccard ≥ 0.75（换措辞重问） */
@@ -657,6 +694,8 @@ public class InterviewService {
                    等明确放弃信号，或是放弃作答、闲聊 → 立即 action="score"，不要对已放弃的候选人继续追问。
                 2. 充分覆盖：候选人不仅提到了核心考点、还给出了具体的机制/流程/原因说明，且无明显薄弱点
                    → action="score"。仅罗列名词、未展开机制的不算覆盖，必须追问其展开。
+                   追问多轮后此前的欠缺已被补齐、只剩参考资料之外的深水区细节（如编译器内部实现、量化指标）时，
+                   也算充分覆盖，应收卷——超纲内容不是面试欠缺，不许无限往下挖。
                 3. 其余一律 action="followup"（这是"拷打"，追问是默认动作）：针对回答中最薄弱、含糊或未展开
                    之处追问一句，每次只追一个点。若上一轮追问未得到回答，换一个更小的切入点，严禁原样重问。
                 4. score/highlights/gaps 无论 action 取值都要给出，且基于对话全程评判（综合打分原则）：
@@ -666,7 +705,9 @@ public class InterviewService {
                    highlights 摘录候选人原话中的关键句（可截取），不要写概括性评语；整体答非所问时 score 给 0 或 1 且 highlights 为空数组；
                    未能深入的追问在 gaps 中体现；吝啬给分：答对核心概念 5-6 分，补齐关键细节与深度才继续往上加；
                    若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
-                   满分应当罕见但可达，不许为了凑欠缺而编造欠缺""");
+                   满分应当罕见但可达，不许为了凑欠缺而编造欠缺。
+                   gaps 只列本题目考点范围内的真实欠缺：参考资料之外的深水区（如编译器内部实现、量化衡量指标）不算欠缺；
+                   已追问过且候选人已作答过的点不再重复列入。""");
         if (mustScore) {
             sb.append("\n\n注意：候选人已放弃本题，action 必须为 \"score\"。"
                     + "评分仍基于对话全程综合给出，不因最后放弃直接打 0 分。");

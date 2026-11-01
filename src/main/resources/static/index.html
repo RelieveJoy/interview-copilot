@@ -761,7 +761,7 @@ async function startInterview() {
     stat.textContent = ''; ivRefresh();
     const s = botShell('🎤 面试官');
     const c = s.querySelector('.content');
-    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。每题面试官会刨根追问到底、不设轮数上限，无欠缺才收卷；随时可点左侧「中途评分」看当前得分与欠缺，按欠缺继续补答就能涨分；答不上来点「直接打分」结束本题。</blockquote></div>`);
+    c.insertAdjacentHTML('beforeend', `<div class="body"><blockquote><b>《${d.topic}》面试开始</b>，共 ${d.questions.length} 题。每题面试官会刨根追问到底、不设轮数上限，问到考点覆盖为止；随时可点左侧「中途评分」看当前得分与欠缺，按欠缺继续补答就能涨分；答不上来点「直接打分」结束本题。</blockquote></div>`);
     msgs.push({ role: 'iv', html: c.querySelector('.body').outerHTML }); persist();
     showQuestion(); scrollBottom(true);
     ta.placeholder = '输入你的回答，回车提交';
