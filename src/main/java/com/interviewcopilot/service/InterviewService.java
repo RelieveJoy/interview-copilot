@@ -260,6 +260,7 @@ public class InterviewService {
                    若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
                    满分应当罕见但可达，不许为了凑欠缺而编造欠缺。gaps 只列本题目考点范围内的真实欠缺，
                    参考资料之外的深水区（如编译器内部实现、量化衡量指标）不算欠缺。
+                   8 分及以下必须至少列出一条相应欠缺——扣分必须点名理由，不许给"感觉分"。
                    候选人回答若是多轮追问的对话记录：分数衡量最终覆盖度——此前暴露的欠缺被后续补答补齐的
                    必须计入并支撑更高分数，不能只看第一轮或最后一轮。
                 """.formatted(question, userAnswer));
@@ -281,7 +282,7 @@ public class InterviewService {
         String raw = evalChatModel.chat(sb.toString());
         Map<String, Object> result = parseObject(raw);
         result.put("gaps", cleanGaps(result.get("gaps"), List.of(userAnswer))); // 净化闸：剔除考生原话引用（先于满分闸，引用式假欠缺不挡 10 分）
-        if (result.get("score") instanceof Number fm) { // 无欠缺即满分（9+空欠缺 → 10）
+        if (result.get("score") instanceof Number fm) { // 无欠缺即高分（空欠缺 ≥6 分档：9→10、6~8→9）
             result.put("score", fullMarks(fm.intValue(), result));
         }
         // 硬闸：无效作答（≤1 分）不允许带任何亮点，防止模型把寒暄原话当亮点
@@ -449,7 +450,7 @@ public class InterviewService {
             decision.put("reference", ev.getOrDefault("reference", ""));
         }
         decision.put("highlights", honestHighlights(decision.get("highlights"), candidateTexts(s.chain)));
-        score = fullMarks(score, decision); // 无欠缺即满分：9 分 + 空欠缺 → 10
+        score = fullMarks(score, decision); // 无欠缺即高分：空欠缺不许低于 9 分
         s.checkpointDecision = new HashMap<>(decision);
         s.checkpointChainSize = s.chain.size();
         s.checkpointGaps.clear();
@@ -498,9 +499,9 @@ public class InterviewService {
     /** 本题收尾：亮点闸门、记入台账、留档已考内容并查重、推进下一题（或收卷）。 */
     private Map<String, Object> finishQuestion(InterviewSession s, String question,
                                                Map<String, Object> decision, int score) {
-        int fm = fullMarks(score, decision); // 无欠缺即满分：9 分 + 空欠缺 → 10
+        int fm = fullMarks(score, decision); // 无欠缺即高分：空欠缺不许低于 9（9 → 10，6~8 → 9）
         if (fm != score) {
-            log.info("[面试留痕] session={} 题{} 无欠缺提满：{} → 10", s.sessionId, s.current + 1, score);
+            log.info("[面试留痕] session={} 题{} 无欠缺高分闸：{} → {}", s.sessionId, s.current + 1, score, fm);
             score = fm;
         }
         if (score <= 1) { // 硬闸：无效作答不允许带亮点
@@ -676,10 +677,15 @@ public class InterviewService {
         return said;
     }
 
-    /** 无欠缺即满分：模型给 9 分且找不出任何欠缺时，压分的唯一理由只剩吝啬——直接给 10。
-     *  仅 9 分档触发（模型对浅答犯懒返回空欠缺也不会被抬分）。 */
+    /** 无欠缺即高分：压分的唯一合法理由是能点名的欠缺，说不出任何欠缺还扣分是"感觉分"。
+     *  gaps 为空（已净化）时：9 分 → 10（满分罕见但可达）；6~8 分 → 9（实测模型给过 8 分+空欠缺，
+     *  "答得不错但没到惊艳"的印象分）。仅 ≥6 分档触发——浅答/无效作答按评分铁律必须带欠缺，
+     *  低分+空欠缺属矛盾输出，保守不抬（极少出现）。 */
     private static int fullMarks(int score, Map<String, Object> decision) {
-        return score == 9 && decision.get("gaps") instanceof List<?> gl && gl.isEmpty() ? 10 : score;
+        if (!(decision.get("gaps") instanceof List<?> gl) || !gl.isEmpty() || score < 6) {
+            return score;
+        }
+        return score == 9 ? 10 : 9;
     }
 
     /** 单次 LLM 判定：继续追问还是收尾，顺带给出基于全链的评分字段。temperature=0 保证稳定。 */
@@ -758,7 +764,8 @@ public class InterviewService {
                    已追问过且候选人已作答过的点不再重复列入。
                 5. 自洽铁律：gaps 里还列着考点内的实质欠缺，就说明没问透，action 必须为 "followup"；
                    action="score" 意味着考点内已无实质欠缺，gaps 必须为空数组 []——
-                   禁止"判定收卷却挂着实质欠缺"的自相矛盾输出。""");
+                   禁止"判定收卷却挂着实质欠缺"的自相矛盾输出。
+                   对称地，8 分及以下必须至少列出一条相应欠缺（扣分必须点名理由，不许给"感觉分"）。""");
         if (mustScore) {
             sb.append("\n\n注意：候选人已放弃本题，action 必须为 \"score\"。"
                     + "评分仍基于对话全程综合给出，不因最后放弃直接打 0 分。");
