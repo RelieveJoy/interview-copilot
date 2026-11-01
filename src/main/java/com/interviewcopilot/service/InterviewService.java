@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -551,6 +552,7 @@ public class InterviewService {
         qlog.put("highlights", decision.getOrDefault("highlights", List.of()));
         qlog.put("gaps", decision.getOrDefault("gaps", List.of()));
         qlog.put("followUps", asked);
+        qlog.put("chain", List.copyOf(s.chain)); // 完整作答过程（答/问交替），复盘报告逐题块用
         qlog.put("rounds", rounds);
         String qTopic = topicFor(s, s.current);
         qlog.put("topic", qTopic);
@@ -865,7 +867,7 @@ public class InterviewService {
                 s.sessionId, entry.questionLog.size(), entry.files.size());
     }
 
-    /** 报告生成的主体：逐题记录 + 笔记白名单 → LLM 严格 JSON 分析 → 服务端渲染 Markdown。 */
+    /** 报告生成的主体：逐题记录（含完整作答过程）→ LLM 只写总体评价 → 服务端确定性渲染其余全部内容。 */
     private void generateReport(ReportEntry e) {
         long t0 = System.currentTimeMillis();
         try {
@@ -881,45 +883,45 @@ public class InterviewService {
                     qs.append(str(q.get("topic"))).append(" · ");
                 }
                 qs.append(q.get("question")).append("」 得分 ").append(q.get("score")).append("/10");
-                if (q.get("highlights") instanceof List<?> hl && !hl.isEmpty()) {
-                    qs.append("\n  亮点：").append(String.join("；", hl.stream().map(String::valueOf).toList()));
+                if (q.get("chain") instanceof List<?> ch && !ch.isEmpty()) {
+                    for (int j = 0; j < ch.size(); j++) {
+                        String turn = str(ch.get(j));
+                        if (turn.isEmpty()) {
+                            continue;
+                        }
+                        qs.append("\n  ").append(j % 2 == 0 ? "答" : "问").append("：")
+                          .append(turn.length() > 120 ? turn.substring(0, 120) + "…" : turn);
+                    }
                 }
                 if (q.get("gaps") instanceof List<?> gl && !gl.isEmpty()) {
-                    qs.append("\n  欠缺：").append(String.join("；", gl.stream().map(String::valueOf).toList()));
-                }
-                if (q.get("followUps") instanceof List<?> fl && !fl.isEmpty()) {
-                    qs.append("\n  追问过：").append(String.join("；", fl.stream().map(String::valueOf).toList()));
+                    qs.append("\n  收卷欠缺：").append(String.join("；", gl.stream().map(String::valueOf).toList()));
                 }
             }
             String prompt = """
-                    你是资深 Java 面试官，刚结束一场《%s》主题的模拟面试，请基于逐题记录做复盘分析。
+                    你是资深 Java 面试官，刚结束一场《%s》主题的模拟面试，请基于逐题记录写复盘总结。
 
                     日期：%s
-                    逐题记录：
-                    %s
-
-                    本场实际涉及的知识库笔记文件（「建议复习」只能从这份清单里挑，文件名一个字不能改）：
+                    逐题记录（问=面试官追问、答=候选人作答）：
                     %s
 
                     只输出严格 JSON（不要 markdown 代码块、不要多余文字），结构：
-                    {"overall": "总体评价150字内：整体表现、得分结构、最突出的强项与短板",
-                     "weakAreas": [{"area": "薄弱领域", "detail": "具体欠缺什么", "advice": "怎么补，30字内"}],
-                     "reviewFiles": ["清单里最该复习的2-4个文件，按优先级"],
-                     "next": "下一步行动，60字内"}
+                    {"overall": "总体评价150字内：整体表现、得分结构、最突出的强项与短板"}
 
-                    要求：weakAreas 按知识领域归并同类欠缺（不按题号罗列），2-5 组；
-                    欠缺为空的题说明掌握扎实，不要硬找毛病；整体低分时如实指出基础薄弱。"""
-                    .formatted(e.topic, e.date, qs, e.files.isEmpty() ? "（本场未命中笔记）" : String.join("\n", e.files));
+                    要求：欠缺为空的题说明掌握扎实，不要硬找毛病；整体低分时如实指出基础薄弱；
+                    只依据逐题记录作评，不得编造记录中不存在的分数或细分项。"""
+                    .formatted(e.topic, e.date, qs);
 
             Map<String, Object> d = parseObject(evalChatModel.chat(prompt));
-            List<String> review = filterReviewFiles(d.get("reviewFiles"), e.files);
-            if (review.isEmpty() && !e.files.isEmpty()) {
-                review = e.files.stream().limit(4).toList(); // 模型清单没过白名单 → 回退为本场实际涉及笔记（仍是真实文件）
-                log.info("[面试复盘] session={} 模型复习清单未过白名单，回退为实际涉及笔记 {}", e.sessionId, review);
+            String overall = str(d.get("overall"));
+            if (overall.isEmpty()) {
+                overall = "本场共 " + e.scores.size() + " 题，平均 "
+                        + String.format("%.1f", e.scores.stream().mapToInt(Integer::intValue).average().orElse(0))
+                        + " 分（总体评价生成失败，以上为得分事实）。";
             }
-            e.markdown = renderReport(e, d, review);
+            Map<String, String> review = reviewGapSources(e);
+            e.markdown = renderReport(e, overall, review);
             e.status = "ready";
-            log.info("[面试复盘] session={} 报告生成完成（{} ms，复习清单 {} 篇）",
+            log.info("[面试复盘] session={} 报告生成完成（{} ms，未补齐欠缺 {} 条）",
                     e.sessionId, System.currentTimeMillis() - t0, review.size());
         } catch (Exception ex) {
             e.status = "failed";
@@ -928,31 +930,39 @@ public class InterviewService {
         }
     }
 
-    /** 白名单闸：LLM 挑的「建议复习」文件必须对应本场真实检索命中的笔记（防编造文件名），映射回真实文件名返回。 */
-    private static List<String> filterReviewFiles(Object picked, List<String> realFiles) {
-        List<String> out = new ArrayList<>();
-        if (picked instanceof List<?> list) {
-            for (Object x : list) {
-                String fn = String.valueOf(x).replace(".md", "").trim();
-                if (fn.isEmpty()) {
+    /** 建议复习清单：收卷时仍未补齐的欠缺逐条列出；来源笔记用本地向量检索按欠缺文本定位（零 token），定位不到回退该题评分命中的笔记。 */
+    private Map<String, String> reviewGapSources(ReportEntry e) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (Map<String, Object> q : e.questionLog) {
+            if (!(q.get("gaps") instanceof List<?> gl) || gl.isEmpty()) {
+                continue;
+            }
+            String topic = str(q.get("topic"));
+            List<String> files = q.get("files") instanceof List<?> fl
+                    ? fl.stream().map(String::valueOf).toList() : List.of();
+            for (Object g : gl) {
+                String gap = str(g);
+                if (gap.isEmpty() || out.containsKey(gap)) {
                     continue;
                 }
-                for (String r : realFiles) {
-                    String rn = r.replace(".md", "").trim();
-                    if (rn.equalsIgnoreCase(fn) || (fn.length() >= 4 && (rn.contains(fn) || fn.contains(rn)))) {
-                        if (!out.contains(r)) {
-                            out.add(r); // 展示真实文件名，LLM 写什么变体都归一到检索事实
-                        }
-                        break;
+                String src = "";
+                if (!topic.isEmpty()) {
+                    List<KnowledgeService.KnowledgeHit> hits = knowledgeService.searchInFiles(gap, topic.trim() + "-", 1);
+                    if (!hits.isEmpty()) {
+                        src = hits.get(0).file();
                     }
                 }
+                if (src.isEmpty() && !files.isEmpty()) {
+                    src = files.get(0);
+                }
+                out.put(gap, src);
             }
         }
         return out;
     }
 
-    /** 报告 Markdown 由服务端确定性渲染（LLM 只出结构化 JSON，版式/清单不交給模型自由发挥）。 */
-    private static String renderReport(ReportEntry e, Map<String, Object> d, List<String> reviewFiles) {
+    /** 报告 Markdown 由服务端确定性渲染：逐题块（题目+完整作答过程+得分+收卷欠缺聚在一处）+ 总体评价 + 建议复习（未补齐欠缺→来源笔记）。 */
+    private static String renderReport(ReportEntry e, String overall, Map<String, String> reviewGaps) {
         double avg = e.scores.stream().mapToInt(Integer::intValue).average().orElse(0);
         StringBuilder md = new StringBuilder();
         md.append("# 面试复盘 · 《").append(e.topic).append("》\n\n");
@@ -962,43 +972,42 @@ public class InterviewService {
             String t = str(q.get("topic"));
             return !t.isEmpty() && !t.equals(e.topic);
         });
-        md.append(mixed ? "## 逐题得分\n\n| # | 主题 | 题目 | 得分 |\n|---|---|---|---|\n"
-                        : "## 逐题得分\n\n| # | 题目 | 得分 |\n|---|---|---|\n");
         for (int i = 0; i < e.questionLog.size(); i++) {
             Map<String, Object> q = e.questionLog.get(i);
-            md.append("| ").append(i + 1).append(" | ").append(mixed ? str(q.get("topic")) + " | " : "")
-              .append(String.valueOf(q.get("question")).replace("|", "／")).append(" | ")
-              .append(q.get("score")).append("/10 |\n");
-        }
-        md.append("\n## 总体评价\n\n").append(str(d.get("overall"))).append("\n");
-        md.append("\n## 薄弱项归类\n\n");
-        if (d.get("weakAreas") instanceof List<?> was && !was.isEmpty()) {
-            java.util.Set<String> seen = new java.util.HashSet<>();
-            for (Object w0 : was) {
-                if (w0 instanceof Map<?, ?> w) {
-                    String key = str(w.get("area")).replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
-                    if (!key.isEmpty() && !seen.add(key)) {
-                        continue; // 同名薄弱领域去重（小模型会把同一领域换个说法罗列两遍）
+            md.append("## 第 ").append(i + 1).append(" 题");
+            if (mixed && !str(q.get("topic")).isEmpty()) {
+                md.append(" · ").append(str(q.get("topic")));
+            }
+            md.append(" · ").append(q.get("score")).append("/10\n\n");
+            md.append("**题目**：").append(q.get("question")).append("\n\n");
+            md.append("**作答过程**：\n\n");
+            if (q.get("chain") instanceof List<?> ch && !ch.isEmpty()) {
+                for (int j = 0; j < ch.size(); j++) {
+                    String turn = str(ch.get(j)).replace("\n", " ");
+                    if (turn.isEmpty()) {
+                        continue;
                     }
-                    md.append("- **").append(str(w.get("area"))).append("** — ")
-                      .append(str(w.get("detail"))).append("\n  - 补法：").append(str(w.get("advice"))).append("\n");
+                    md.append("- **").append(j % 2 == 0 ? "答" : "问").append("**：").append(turn).append("\n");
                 }
+            } else {
+                md.append("- （无作答记录）\n");
             }
-            if (seen.isEmpty()) {
-                md.append("（本场未发现明显薄弱项，保持手感）\n");
+            if (q.get("highlights") instanceof List<?> hl && !hl.isEmpty()) {
+                md.append("\n**亮点**：").append(String.join("；", hl.stream().map(String::valueOf).toList())).append("\n");
             }
-        } else {
-            md.append("（本场未发现明显薄弱项，保持手感）\n");
+            if (q.get("gaps") instanceof List<?> gl && !gl.isEmpty()) {
+                md.append("\n**收卷欠缺**：").append(String.join("；", gl.stream().map(String::valueOf).toList())).append("\n");
+            }
+            md.append("\n---\n\n");
         }
-        md.append("\n## 建议复习笔记\n\n");
-        if (reviewFiles.isEmpty()) {
-            md.append("（本场未检索到相关笔记）\n");
+        md.append("## 总体评价\n\n").append(overall).append("\n");
+        md.append("\n## 建议复习（收卷时未补齐的欠缺）\n\n");
+        if (reviewGaps.isEmpty()) {
+            md.append("本场各题收卷时已无未补齐的欠缺，保持手感。\n");
         } else {
-            for (String f : reviewFiles) {
-                md.append("- `").append(f).append("`\n");
-            }
+            reviewGaps.forEach((gap, file) -> md.append("- ").append(gap)
+                    .append(file.isEmpty() ? "" : "（来源：`" + file + "`）").append("\n"));
         }
-        md.append("\n## 下一步\n\n").append(str(d.get("next"))).append("\n");
         return md.toString();
     }
 

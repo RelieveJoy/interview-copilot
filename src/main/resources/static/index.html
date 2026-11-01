@@ -270,7 +270,7 @@
   #scroller::-webkit-scrollbar, aside::-webkit-scrollbar { width: 8px; }
   #scroller::-webkit-scrollbar-thumb, aside::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
-  /* ---------- 复盘报告：铃铛 + 下拉 + 预览弹层 ---------- */
+  /* ---------- 复盘报告：铃铛 + 下拉（点开即下载 .md 文件） ---------- */
   .bell-wrap { position: relative; }
   .bell-dot {
     position: absolute; top: -4px; right: -4px; width: 9px; height: 9px;
@@ -301,26 +301,6 @@
   }
   .report-item .retry:hover { color: var(--text); border-color: var(--faint); }
   .report-empty { padding: 16px 12px; text-align: center; color: var(--faint); font-size: 12.5px; line-height: 1.8; }
-  .report-modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 70;
-    display: flex; align-items: center; justify-content: center; padding: 24px;
-  }
-  .report-panel {
-    width: min(760px, 100%); max-height: 86vh; display: flex; flex-direction: column;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
-    box-shadow: 0 24px 60px rgba(0,0,0,.5);
-  }
-  .report-head {
-    display: flex; justify-content: space-between; align-items: center; gap: 10px;
-    padding: 12px 16px; border-bottom: 1px solid var(--border);
-  }
-  .report-head b { font-size: 14.5px; }
-  .rm-meta { display: block; font-size: 12px; color: var(--faint); font-weight: 400; margin-top: 2px; }
-  .report-body { padding: 8px 20px 18px; overflow-y: auto; }
-  .report-body::-webkit-scrollbar { width: 8px; }
-  .report-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-  .report-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--border); }
-  .report-foot .btn { width: auto; margin: 0; padding: 7px 16px; }
 
   /* ---------- 移动端 ---------- */
   #backdrop { display: none; position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 40; }
@@ -398,20 +378,6 @@
 <div id="toast"></div>
 
 <div id="reportDrop" class="report-drop"></div>
-
-<div id="reportModal" class="report-modal" style="display:none">
-  <div class="report-panel">
-    <div class="report-head">
-      <div><b id="rmTitle">复盘报告</b><span class="rm-meta" id="rmMeta"></span></div>
-      <button class="iconbtn" onclick="closeReport()">✕ 关闭</button>
-    </div>
-    <div class="report-body" id="rmBody"></div>
-    <div class="report-foot">
-      <button class="btn ghost" onclick="copyReport()">📋 复制全文</button>
-      <button class="btn" onclick="downloadReport()">⬇ 下载 .md</button>
-    </div>
-  </div>
-</div>
 
 <script>
 'use strict';
@@ -899,7 +865,7 @@ function renderSummaryCard(scores, liveNote) {
     `<div class="head"><div class="score-ring" style="color:${cAll(avg)};background:${bg};border:2px solid ${cAll(avg)}">${avgTxt}<span style="font-size:10px;font-weight:400">/10</span></div>` +
     `<div class="verdict"><b>面试完成 · 共 ${scores.length} 题</b>平均分与逐题得分</div></div>` +
     scores.map((v, i) => `<div class="sumrow"><span>第 ${i + 1} 题</span><b style="color:${cAll(v)}">${v}/10</b></div>`).join('') +
-    (liveNote ? `<div class="sumrow" style="color:var(--muted)"><span>🔔 复盘报告后台生成中，完成后右上角铃铛亮起，可预览 / 下载</span></div>` : '') +
+    (liveNote ? `<div class="sumrow" style="color:var(--muted)"><span>🔔 复盘报告后台生成中，完成后右上角铃铛亮起，点开即下载 .md 文件</span></div>` : '') +
     `</div></div>`);
   scrollBottom(true);
 }
@@ -1019,11 +985,11 @@ function newChat() {
   toast('已开启新对话');
 }
 
-/* ================= 复盘报告（铃铛）：异步生成 → 轮询 → 预览/下载 ================= */
+/* ================= 复盘报告（铃铛）：异步生成 → 轮询 → 点开即下载 .md ================= */
 const LS_REPORTS = 'ic.reports.v1', LS_PENDING = 'ic.reportPending.v1';
 let reports = []; try { reports = JSON.parse(localStorage.getItem(LS_REPORTS) || '[]'); } catch (e) { reports = []; }
 let reportPending = null; try { reportPending = JSON.parse(localStorage.getItem(LS_PENDING) || 'null'); } catch (e) { reportPending = null; }
-let pollTimer = null, pollTries = 0, curReport = null;
+let pollTimer = null, pollTries = 0;
 
 function persistReports() { localStorage.setItem(LS_REPORTS, JSON.stringify(reports.slice(-20))); }
 function bellState() {
@@ -1097,6 +1063,7 @@ function renderReportList() {
       item.innerHTML = `${r.unread ? '<span class="undot"></span>' : ''}` +
         `<div class="t"><b>《${esc(r.topic)}》复盘报告</b><span>${esc(r.date || '')} · ${(r.scores || []).length} 题</span></div>` +
         `<span class="sc ${avg >= 7 ? 'g' : avg >= 4 ? 'a' : 'r'}">${avg.toFixed(1)}</span>`;
+      item.title = '点击下载 .md 文件';
       item.onclick = () => openReport(r);
     }
     drop.appendChild(item);
@@ -1125,24 +1092,13 @@ function openReport(r) {
   reports.forEach(x => { if (x === r) x.unread = false; });
   persistReports(); bellState();
   document.getElementById('reportDrop').classList.remove('open');
-  curReport = r;
-  const avg = (r.scores || []).length ? (r.scores.reduce((a, b) => a + b, 0) / r.scores.length).toFixed(1) : '-';
-  document.getElementById('rmTitle').textContent = `《${r.topic}》复盘报告`;
-  document.getElementById('rmMeta').textContent = `${r.date || ''} · 共 ${(r.scores || []).length} 题 · 平均 ${avg} 分`;
-  document.getElementById('rmBody').innerHTML = md(r.markdown || '');
-  document.getElementById('reportModal').style.display = 'flex';
-}
-function closeReport() { document.getElementById('reportModal').style.display = 'none'; }
-function copyReport() { copyText(curReport.markdown || '').then(() => toast('复盘报告已复制到剪贴板')); }
-function downloadReport() {
-  const name = `面试复盘-${curReport.topic}-${(curReport.date || '').replace(/[-: ]/g, '')}.md`;
-  const blob = new Blob([curReport.markdown || ''], { type: 'text/markdown;charset=utf-8' });
+  const name = `面试复盘-${r.topic}-${(r.date || '').replace(/[-: ]/g, '')}.md`;
+  const blob = new Blob([r.markdown || ''], { type: 'text/markdown;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 3000);
   toast('已下载 ' + name);
 }
-document.getElementById('reportModal').addEventListener('click', e => { if (e.target.id === 'reportModal') closeReport(); });
 document.addEventListener('click', e => {
   const drop = document.getElementById('reportDrop');
   if (drop.classList.contains('open') && !e.target.closest('#reportDrop') && !e.target.closest('.bell-wrap')) {
