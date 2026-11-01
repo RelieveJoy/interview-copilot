@@ -324,9 +324,11 @@ public class InterviewService {
                 ? ((String) decision.get("followup")).trim() : null;
         boolean followup = !mustScore && "followup".equals(decision.get("action")) && fu != null;
         if (followup && isAskedBefore(s, fu)) {
-            // 硬闸：模型把问过的追问原样又问一遍（实测 glm-4-flash 无视提示词禁令）→ 没有新问题可问，强制终评
-            log.info("[面试留痕] session={} 题{} 追问与已问过的问题重复，强制终评：{}", s.sessionId, s.current + 1, fu);
+            // 硬闸：模型把问过的追问原样又问一遍（实测 glm-4-flash 无视提示词禁令）→ 弃用并置空，
+            // 绝不能让下方"有欠缺不收卷"闸把这个刚被击毙的重复追问又捞回来（实测踩过这个坑）
+            log.info("[面试留痕] session={} 题{} 追问与已问过的问题重复，弃用：{}", s.sessionId, s.current + 1, fu);
             followup = false;
+            fu = null;
         }
         if (!followup && !mustScore) {
             // 硬闸：有欠缺不收卷——判定模型"充分覆盖"偏宽松（一句话作答也能 9 分直接终评），
@@ -335,12 +337,16 @@ public class InterviewService {
             boolean parseFailed = decision.get("score") instanceof Number pn && pn.intValue() < 0;
             List<?> gaps = decision.get("gaps") instanceof List<?> gl ? gl : List.of();
             if (!parseFailed && !gaps.isEmpty()) {
-                if (fu == null) {
+                String cand = fu;
+                if (cand == null) {
                     String g = String.valueOf(gaps.get(0));
-                    fu = "你的回答里「" + (g.length() > 60 ? g.substring(0, 60) + "…" : g) + "」还没讲透，展开讲讲这部分";
+                    cand = "你的回答里「" + (g.length() > 60 ? g.substring(0, 60) + "…" : g) + "」还没讲透，展开讲讲这部分";
                 }
-                followup = true;
-                log.info("[面试留痕] session={} 题{} 终评判定仍有欠缺，服务端强制追问：{}", s.sessionId, s.current + 1, fu);
+                if (!isAskedBefore(s, cand)) { // 合成/候补追问自己也不能与已问过的重复，重复则放弃强制、正常终评
+                    fu = cand;
+                    followup = true;
+                    log.info("[面试留痕] session={} 题{} 终评判定仍有欠缺，服务端强制追问：{}", s.sessionId, s.current + 1, fu);
+                }
             }
         }
         if (followup) {
