@@ -260,6 +260,8 @@ public class InterviewService {
                    若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
                    满分应当罕见但可达，不许为了凑欠缺而编造欠缺。gaps 只列本题目考点范围内的真实欠缺，
                    参考资料之外的深水区（如编译器内部实现、量化衡量指标）不算欠缺。
+                   候选人回答若是多轮追问的对话记录：分数衡量最终覆盖度——此前暴露的欠缺被后续补答补齐的
+                   必须计入并支撑更高分数，不能只看第一轮或最后一轮。
                 """.formatted(question, userAnswer));
         if (hits.isEmpty()) {
             sb.append("\n（知识库未检索到相关资料，按通用标准评价）");
@@ -278,6 +280,7 @@ public class InterviewService {
 
         String raw = evalChatModel.chat(sb.toString());
         Map<String, Object> result = parseObject(raw);
+        result.put("gaps", cleanGaps(result.get("gaps"), List.of(userAnswer))); // 净化闸：剔除考生原话引用（先于满分闸，引用式假欠缺不挡 10 分）
         if (result.get("score") instanceof Number fm) { // 无欠缺即满分（9+空欠缺 → 10）
             result.put("score", fullMarks(fm.intValue(), result));
         }
@@ -325,6 +328,7 @@ public class InterviewService {
             log.info("[面试留痕] session={} 题{} 候选人放弃信号命中，跳过追问直接终评", s.sessionId, s.current + 1);
         }
         Map<String, Object> decision = d.decision();
+        decision.put("gaps", cleanGaps(decision.get("gaps"), candidateTexts(s.chain))); // 净化闸：模型会把考生整段原话塞进 gaps
         log.info("[面试留痕] session={} 《{}》 题{}/{} 第{}轮 候选人作答，判定 action={}（引用：{}）",
                 s.sessionId, s.topic, s.current + 1, s.questions.size(), s.followUps + 1,
                 decision.getOrDefault("action", "?"),
@@ -435,6 +439,7 @@ public class InterviewService {
             throw new IllegalArgumentException("还没有作答，先答一版再中途评分");
         }
         Map<String, Object> decision = judge(s, question, false).decision();
+        decision.put("gaps", cleanGaps(decision.get("gaps"), candidateTexts(s.chain))); // 净化闸：同上
         int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
         if (score < 0) { // 模型没给分 → 用整条链补评
             Map<String, Object> ev = evaluate(question, transcript(s.chain), topicFor(s, s.current));
@@ -598,6 +603,43 @@ public class InterviewService {
         return String.valueOf(gaps.get(0)).trim();
     }
 
+    /**
+     * gaps 净化闸（服务端硬闸，提示词拦不住）：判定/评分模型会把候选人整段原话塞进 gaps
+     * 当"欠缺"——指着答案本身说话不是欠缺。归一化后 ≥20 字且被任一轮考生作答包含的
+     * "gap"即视为原话引用，剔除；短的、真正指出缺失点的照常保留。
+     */
+    private static List<String> cleanGaps(Object gaps, List<String> candidateTexts) {
+        if (!(gaps instanceof List<?> gl) || gl.isEmpty()) {
+            return List.of();
+        }
+        List<String> said = new ArrayList<>();
+        for (String a : candidateTexts) {
+            said.add(a.replaceAll("[^\\p{IsHan}A-Za-z0-9]", ""));
+        }
+        List<String> out = new ArrayList<>();
+        for (Object g : gl) {
+            String t = String.valueOf(g).trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            if (t.length() >= 20) {
+                String n = t.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
+                boolean quoted = false;
+                for (String a : said) {
+                    if (!n.isEmpty() && a.contains(n)) {
+                        quoted = true;
+                        break;
+                    }
+                }
+                if (quoted) {
+                    continue;
+                }
+            }
+            out.add(t);
+        }
+        return out;
+    }
+
     /** 两问是否同题：归一化后完全相同 / 互为包含（短边≥8字）/ 字符二元组 Jaccard ≥ 0.75（换措辞重问） */
     private static boolean isSameQuestion(String a, String b) {
         String na = a.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
@@ -674,6 +716,12 @@ public class InterviewService {
                 sb.append("\n").append(i + 1).append(". ").append(s.checkpointGaps.get(i));
             }
         }
+        if (s.checkpointDecision != null && s.checkpointDecision.get("score") instanceof Number cp) {
+            // 涨分基线：没有它，温度=0 的模型每次从零重评整条链，整体印象不变 → 分数原地踏步（实测卡 7）
+            sb.append("\n上次中途评分：").append(cp.intValue()).append(" 分（当时指出的欠缺见上）。")
+              .append("\n涨分铁律：本次评分必须与上次可比——候选人此后每补齐一条当时的欠缺，分数必须相应上涨；")
+              .append("只补齐一部分则小幅上涨；此后没有新的实质作答才允许维持同分；只有新答出现明确错误才允许降分。");
+        }
         if (hits.isEmpty()) {
             sb.append("\n（知识库未检索到相关资料，按通用标准评价）");
         } else {
@@ -707,7 +755,10 @@ public class InterviewService {
                    若候选人已完整、准确覆盖考点（机制、流程、原因都讲清且无错误），gaps 允许为空数组并给 9-10 分——
                    满分应当罕见但可达，不许为了凑欠缺而编造欠缺。
                    gaps 只列本题目考点范围内的真实欠缺：参考资料之外的深水区（如编译器内部实现、量化衡量指标）不算欠缺；
-                   已追问过且候选人已作答过的点不再重复列入。""");
+                   已追问过且候选人已作答过的点不再重复列入。
+                5. 自洽铁律：gaps 里还列着考点内的实质欠缺，就说明没问透，action 必须为 "followup"；
+                   action="score" 意味着考点内已无实质欠缺，gaps 必须为空数组 []——
+                   禁止"判定收卷却挂着实质欠缺"的自相矛盾输出。""");
         if (mustScore) {
             sb.append("\n\n注意：候选人已放弃本题，action 必须为 \"score\"。"
                     + "评分仍基于对话全程综合给出，不因最后放弃直接打 0 分。");
