@@ -330,7 +330,8 @@ public class InterviewService {
             log.info("[面试留痕] session={} 题{} 候选人放弃信号命中，跳过追问直接终评", s.sessionId, s.current + 1);
         }
         Map<String, Object> decision = d.decision();
-        decision.put("gaps", cleanGaps(decision.get("gaps"), candidateTexts(s.chain))); // 净化闸：模型会把考生整段原话塞进 gaps
+        // 净化闸：模型会把考生整段原话塞进 gaps；僵尸欠缺净化：已问过且已实质作答的点不算欠缺
+        decision.put("gaps", stripZombieGaps(s, cleanGaps(decision.get("gaps"), candidateTexts(s.chain))));
         // 欠缺台账增量更新：首答轮建立地基（原题考点 vs 首答的缺口），之后每轮的 gaps 即最新台账，
         // 下一轮判定在提示词里拿到这份台账并按增删规则演化——防止追问凭空漂移（实测漂到过超纲深水区）
         syncGapLedger(s, decision.get("gaps"));
@@ -360,19 +361,24 @@ public class InterviewService {
             boolean hasRealGaps = !parseFailed && !gaps.isEmpty();
             if (hasRealGaps && s.forcedFollowups < MAX_FORCED_FOLLOWUPS) {
                 String cand = fu;
-                String rawGap = null;
                 if (cand == null) {
-                    rawGap = pickGap(gaps);
-                    cand = "你的回答里「" + (rawGap.length() > 60 ? rawGap.substring(0, 60) + "…" : rawGap) + "」还没讲透，展开讲讲这部分";
+                    // 只拿"没问过的新鲜欠缺"合成追问：全是已问战场的复读欠缺时不烧强制额度（该收卷就收卷）
+                    String rawGap = pickFreshGap(s, gaps);
+                    if (rawGap != null) {
+                        cand = "你的回答里「" + (rawGap.length() > 60 ? rawGap.substring(0, 60) + "…" : rawGap) + "」还没讲透，展开讲讲这部分";
+                    }
                 }
                 // 合成/候补追问不能与已问过的重复；合成模板"你的回答里「X」还没讲透"会稀释相似度
                 // 骗过判重（实测：刚答完的欠缺换个壳又被问一遍），所以裸欠缺文本也要过一遍判重
-                if (!isAskedBefore(s, cand) && (rawGap == null || !isAskedBefore(s, rawGap))) {
+                if (cand != null && !isAskedBefore(s, cand)) {
                     fu = cand;
                     followup = true;
                     s.forcedFollowups++;
                     log.info("[面试留痕] session={} 题{} 终评判定仍有欠缺，服务端强制追问（{}/{}）：{}",
                             s.sessionId, s.current + 1, s.forcedFollowups, MAX_FORCED_FOLLOWUPS, fu);
+                } else if (cand == null) {
+                    log.info("[面试留痕] session={} 题{} 剩余欠缺全是已问战场的复读，不再强制追问，收卷",
+                            s.sessionId, s.current + 1);
                 }
             } else if (hasRealGaps) {
                 log.info("[面试留痕] session={} 题{} 判定仍有欠缺但强制追问额度已用完（{}次），收卷",
@@ -450,7 +456,7 @@ public class InterviewService {
             throw new IllegalArgumentException("还没有作答，先答一版再中途评分");
         }
         Map<String, Object> decision = judge(s, question, false).decision();
-        decision.put("gaps", cleanGaps(decision.get("gaps"), candidateTexts(s.chain))); // 净化闸：同上
+        decision.put("gaps", stripZombieGaps(s, cleanGaps(decision.get("gaps"), candidateTexts(s.chain)))); // 净化闸+僵尸欠缺净化：同上
         int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
         // 无效判定闸（同终评路径）：低分必须点名欠缺，空欠缺的低分判定作废，整链补评
         boolean invalidLow = score >= 0 && score < 6
@@ -510,10 +516,27 @@ public class InterviewService {
     /** 本题收尾：亮点闸门、记入台账、留档已考内容并查重、推进下一题（或收卷）。 */
     private Map<String, Object> finishQuestion(InterviewSession s, String question,
                                                Map<String, Object> decision, int score) {
+        // 僵尸欠缺净化（补评路径的 gaps 未经 turn/doCheckpoint 净化，此处兜底）：
+        // 与"已问过且考生已实质作答"的追问同义的欠缺不是欠缺，剔掉（剔空了自然触发下方高分闸）
+        int gapCountBefore = decision.get("gaps") instanceof List<?> gl0 ? gl0.size() : 0;
+        decision.put("gaps", stripZombieGaps(s, decision.get("gaps")));
+        if (decision.get("gaps") instanceof List<?> gl1 && gl1.size() < gapCountBefore) {
+            log.info("[面试留痕] session={} 题{} 僵尸欠缺净化：{} 条 → {} 条（已问过且已实质作答的点不算欠缺）",
+                    s.sessionId, s.current + 1, gapCountBefore, gl1.size());
+        }
         int fm = fullMarks(score, decision); // 无欠缺即高分：空欠缺不许低于 9（9 → 10，6~8 → 9）
         if (fm != score) {
             log.info("[面试留痕] session={} 题{} 无欠缺高分闸：{} → {}", s.sessionId, s.current + 1, score, fm);
             score = fm;
+        }
+        // 终评锚定闸：终评不得低于最后一次中途评分——涨分铁律的服务端兜底（判定模型看着铁律
+        // 仍会把整条链从零重评压回低分，实测中途 9 分、终评 7 分）。中途评分之后出现过放弃轮
+        // 则不锚：放弃场景走综合重评重新定分，锚已失义
+        if (s.checkpointDecision != null && s.checkpointDecision.get("score") instanceof Number cpn
+                && cpn.intValue() > score && !bailAfterCheckpoint(s)) {
+            log.info("[面试留痕] session={} 题{} 终评锚定闸：终评 {} 低于中途评分 {}，按涨分铁律取中途评分",
+                    s.sessionId, s.current + 1, score, cpn.intValue());
+            score = cpn.intValue();
         }
         if (score <= 1) { // 硬闸：无效作答不允许带亮点
             decision.put("highlights", List.of());
@@ -601,7 +624,7 @@ public class InterviewService {
             }
             boolean dup = false;
             for (String e : s.checkpointGaps) {
-                if (isSameQuestion(e, t)) {
+                if (sameBattle(e, t, 10)) {
                     dup = true;
                     break;
                 }
@@ -613,11 +636,14 @@ public class InterviewService {
     }
 
     /** 追问是否已经问过：与原题或此前任何一条追问重复即真（提示词禁不住小模型原样重问，服务端判重硬闸） */
-    private static boolean isAskedBefore(InterviewSession s, String fu) {        if (isSameQuestion(fu, s.questions.get(s.current))) {
+    private static boolean isAskedBefore(InterviewSession s, String fu) {
+        if (isSameQuestion(fu, s.questions.get(s.current))) {
             return true;
         }
         for (int i = 1; i < s.chain.size(); i += 2) {
-            if (isSameQuestion(fu, s.chain.get(i))) {
+            // 追问对追问用加强判同（共享 ≥10 字考点核心串即同题）：题干只用基础判同——
+            // 追问天然围绕题干考点展开，与题干共享长串是正常递进，不算重复
+            if (sameBattle(fu, s.chain.get(i), 10)) {
                 return true;
             }
         }
@@ -625,18 +651,32 @@ public class InterviewService {
     }
 
     /**
-     * 挑一条用来合成追问的欠缺：优先选 6~60 字的"干净"短欠缺。
-     * 实测判定模型会把候选人整段回答原样塞进 gaps 当欠缺，直接用 gaps[0] 会合成
-     * "你的回答里「（整段答案截断60字）」还没讲透"这种没头没尾的追问。
+     * 挑一条用来合成强制追问的"新鲜"欠缺：优先 6~60 字的干净短欠缺，且不得与已问过的追问同战场
+     * （实测判定模型会在同一考点上无限复读欠缺，强制额度烧在僵尸问题上）。全是已问过的 → null。
      */
-    private static String pickGap(List<?> gaps) {
+    private static String pickFreshGap(InterviewSession s, List<?> gaps) {
         for (Object g : gaps) {
             String t = String.valueOf(g).trim();
-            if (t.length() >= 6 && t.length() <= 60) {
+            if (t.length() >= 6 && t.length() <= 60 && !gapAlreadyAsked(s, t)) {
                 return t;
             }
         }
-        return String.valueOf(gaps.get(0)).trim();
+        for (Object g : gaps) {
+            String t = String.valueOf(g).trim();
+            if (!gapAlreadyAsked(s, t)) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    private static boolean gapAlreadyAsked(InterviewSession s, String gap) {
+        for (int i = 1; i < s.chain.size(); i += 2) {
+            if (sameBattle(gap, s.chain.get(i), 8)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -701,6 +741,68 @@ public class InterviewService {
             set.add(s.substring(i, i + 2));
         }
         return set;
+    }
+
+    /**
+     * 加强判同（同一考点）：在 isSameQuestion 基础上，归一化后存在 ≥minRun 字的公共连续片段即判同。
+     * 换措辞复读往往原样保留考点核心长串（实测追问只改了开头四五个字，"hash值key引用value引用
+     * 和next指针的具体作用和内存占用"整段照抄），字符二元组 Jaccard 对此不敏感（实测 0.54 漏网）。
+     */
+    private static boolean sameBattle(String a, String b, int minRun) {
+        if (isSameQuestion(a, b)) {
+            return true;
+        }
+        String na = a.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
+        String nb = b.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "");
+        if (na.length() < minRun || nb.length() < minRun) {
+            return false;
+        }
+        for (int i = 0; i + minRun <= na.length(); i++) {
+            if (nb.contains(na.substring(i, i + minRun))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 僵尸欠缺净化闸：判定规则明文"已追问过且候选人已作答过的点不再重复列入"，但模型对已补答的
+     * 考点不肯松口、换措辞反复列（实测同一战场纠缠 5 轮，收卷还挂两条同义欠缺）。与某条已问过的
+     * 追问同战场、且该追问得到了实质性（非放弃）作答的"欠缺"，视为已消化，剔除。放弃轮对应的
+     * 追问不剔——"未能作答"是真欠缺。
+     */
+    private static List<String> stripZombieGaps(InterviewSession s, Object gaps) {
+        if (!(gaps instanceof List<?> gl) || gl.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (Object g : gl) {
+            String t = String.valueOf(g).trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            boolean zombie = false;
+            for (int i = 1; i + 1 < s.chain.size(); i += 2) { // i+1 存在 = 该追问有对应作答
+                if (sameBattle(t, s.chain.get(i), 8) && !isBailOut(s.chain.get(i + 1))) {
+                    zombie = true;
+                    break;
+                }
+            }
+            if (!zombie) {
+                out.add(t);
+            }
+        }
+        return out;
+    }
+
+    /** 最后一次中途评分之后是否出现过放弃轮（出现则终评锚定失义：放弃场景走综合重评重新定分） */
+    private static boolean bailAfterCheckpoint(InterviewSession s) {
+        for (int i = Math.max(0, s.checkpointChainSize); i < s.chain.size(); i += 2) {
+            if (isBailOut(s.chain.get(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 对话链里的候选人各轮作答（偶数下标） */
