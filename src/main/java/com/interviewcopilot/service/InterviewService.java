@@ -761,8 +761,8 @@ public class InterviewService {
         if (s.checkpointDecision != null && s.checkpointDecision.get("score") instanceof Number cp) {
             // 涨分基线：没有它，温度=0 的模型每次从零重评整条链，整体印象不变 → 分数原地踏步（实测卡 7）
             sb.append("\n上次中途评分：").append(cp.intValue()).append(" 分（当时指出的欠缺见上）。")
-              .append("\n涨分铁律：本次评分必须与上次可比——候选人此后每补齐一条当时的欠缺，分数必须相应上涨；")
-              .append("只补齐一部分则小幅上涨；此后没有新的实质作答才允许维持同分；只有新答出现明确错误才允许降分。");
+              .append("\n涨分铁律（与上次评分必须可比）：上次的欠缺被候选人补上了（答到点子上），分数必须相应上涨；")
+              .append("没补上或答非所问，分数一律不动，换更小的切入点继续问；只有新答出现明确错误才允许降分。");
         }
         if (hits.isEmpty()) {
             sb.append("\n（知识库未检索到相关资料，按通用标准评价）");
