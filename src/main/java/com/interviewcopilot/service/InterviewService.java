@@ -330,6 +330,9 @@ public class InterviewService {
         }
         Map<String, Object> decision = d.decision();
         decision.put("gaps", cleanGaps(decision.get("gaps"), candidateTexts(s.chain))); // 净化闸：模型会把考生整段原话塞进 gaps
+        // 欠缺台账增量更新：首答轮建立地基（原题考点 vs 首答的缺口），之后每轮的 gaps 即最新台账，
+        // 下一轮判定在提示词里拿到这份台账并按增删规则演化——防止追问凭空漂移（实测漂到过超纲深水区）
+        syncGapLedger(s, decision.get("gaps"));
         log.info("[面试留痕] session={} 《{}》 题{}/{} 第{}轮 候选人作答，判定 action={}（引用：{}）",
                 s.sessionId, s.topic, s.current + 1, s.questions.size(), s.followUps + 1,
                 decision.getOrDefault("action", "?"),
@@ -384,7 +387,13 @@ public class InterviewService {
 
         // ---- 收尾打分 ----
         int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
-        if (score < 0) { // 模型该评没评（或解析失败）→ 用整条链补评一次
+        // 无效判定闸：低分必须点名欠缺——没有欠缺为什么要给低分？6 分以下还空欠缺的判定作废，整链补评一次
+        boolean invalidLow = score >= 0 && score < 6
+                && !(decision.get("gaps") instanceof List<?> gl && !gl.isEmpty());
+        if (score < 0 || invalidLow) { // 模型该评没评（或解析失败）/ 低分无欠缺 → 用整条链补评一次
+            if (invalidLow) {
+                log.info("[面试留痕] session={} 题{} 低分（{}）却说不出欠缺，判定无效，整链补评", s.sessionId, s.current + 1, score);
+            }
             Map<String, Object> ev = evaluate(question, transcript(s.chain), topicFor(s, s.current));
             score = ev.get("score") instanceof Number n2 ? n2.intValue() : 0;
             decision.put("highlights", ev.getOrDefault("highlights", List.of()));
@@ -442,7 +451,13 @@ public class InterviewService {
         Map<String, Object> decision = judge(s, question, false).decision();
         decision.put("gaps", cleanGaps(decision.get("gaps"), candidateTexts(s.chain))); // 净化闸：同上
         int score = decision.get("score") instanceof Number n && n.intValue() >= 0 ? n.intValue() : -1;
-        if (score < 0) { // 模型没给分 → 用整条链补评
+        // 无效判定闸（同终评路径）：低分必须点名欠缺，空欠缺的低分判定作废，整链补评
+        boolean invalidLow = score >= 0 && score < 6
+                && !(decision.get("gaps") instanceof List<?> gl && !gl.isEmpty());
+        if (score < 0 || invalidLow) { // 模型没给分 / 低分无欠缺 → 用整条链补评
+            if (invalidLow) {
+                log.info("[面试留痕] session={} 题{} 中途评分低分（{}）却说不出欠缺，判定无效，整链补评", s.sessionId, s.current + 1, score);
+            }
             Map<String, Object> ev = evaluate(question, transcript(s.chain), topicFor(s, s.current));
             score = ev.get("score") instanceof Number n2 ? n2.intValue() : 0;
             decision.put("highlights", ev.getOrDefault("highlights", List.of()));
@@ -453,12 +468,7 @@ public class InterviewService {
         score = fullMarks(score, decision); // 无欠缺即高分：空欠缺不许低于 9 分
         s.checkpointDecision = new HashMap<>(decision);
         s.checkpointChainSize = s.chain.size();
-        s.checkpointGaps.clear();
-        if (decision.get("gaps") instanceof List<?> gl) {
-            for (Object g : gl) {
-                s.checkpointGaps.add(String.valueOf(g));
-            }
-        }
+        syncGapLedger(s, decision.get("gaps"));
         log.info("[面试留痕] session={} 题{} 中途评分 score={}（追问{}轮）欠缺={}",
                 s.sessionId, s.current + 1, score, s.followUps, s.checkpointGaps);
         Map<String, Object> out = new HashMap<>();
@@ -576,9 +586,32 @@ public class InterviewService {
         return out;
     }
 
+    /** 台账同步：整表替换 + 同义去重（实测模型爱把同一条欠缺换三个说法罗列，isSameQuestion 判同义） */
+    private static void syncGapLedger(InterviewSession s, Object gaps) {
+        s.checkpointGaps.clear();
+        if (!(gaps instanceof List<?> gl)) {
+            return;
+        }
+        for (Object g : gl) {
+            String t = String.valueOf(g).trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            boolean dup = false;
+            for (String e : s.checkpointGaps) {
+                if (isSameQuestion(e, t)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                s.checkpointGaps.add(t);
+            }
+        }
+    }
+
     /** 追问是否已经问过：与原题或此前任何一条追问重复即真（提示词禁不住小模型原样重问，服务端判重硬闸） */
-    private static boolean isAskedBefore(InterviewSession s, String fu) {
-        if (isSameQuestion(fu, s.questions.get(s.current))) {
+    private static boolean isAskedBefore(InterviewSession s, String fu) {        if (isSameQuestion(fu, s.questions.get(s.current))) {
             return true;
         }
         for (int i = 1; i < s.chain.size(); i += 2) {
@@ -717,10 +750,13 @@ public class InterviewService {
             }
         }
         if (!s.checkpointGaps.isEmpty()) {
-            sb.append("\n中途评分指出的欠缺（你的追问应优先针对这些欠缺一层一层递进验证，候选人已补齐的不要再问）：");
+            sb.append("\n当前未补齐的欠缺台账（候选人首答是地基，此后每轮增量更新）：");
             for (int i = 0; i < s.checkpointGaps.size(); i++) {
                 sb.append("\n").append(i + 1).append(". ").append(s.checkpointGaps.get(i));
             }
+            sb.append("\n台账更新规则：本轮输出的 gaps 必须是台账的增量版——候选人已补齐的从中删去；")
+              .append("没补齐的不许悄悄消失；新增项只能是候选人本轮作答新暴露的错误或漏洞（考点范围内），没有就不新增；")
+              .append("严禁在台账之外凭空开辟新战场。你的追问优先针对台账中仍未补齐的欠缺递进验证。");
         }
         if (s.checkpointDecision != null && s.checkpointDecision.get("score") instanceof Number cp) {
             // 涨分基线：没有它，温度=0 的模型每次从零重评整条链，整体印象不变 → 分数原地踏步（实测卡 7）
